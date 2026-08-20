@@ -1,21 +1,99 @@
-/* GLINT H-TILE S1 sketch — CUDA, Ampere sm_86.
- * Replace NF4 codebook[nibble]*absmax with GLINT_CELLS[hole][plug]*absmax.
- * Plug[L] resident in VRAM. memcpyAsync plug[L+1] on stream 1 — never in TILE_K.
- * S5: swap FMA for mma.sync.bf16. train_ok=false.
+/* GLINT H-TILE S3 — K-contiguous packed loads, smem tiles, cp.async D=2.
  *
- * nvcc -arch=sm_86 -I../include -c glint_htile.cu
+ * Coalescing: packed hole/plug are sequential in K. Threads load 16B along K
+ * for a fixed N-row. Old sketch walked N first (stride K/2) — uncoalesced.
+ *
+ * Tile: M=16 N=16 K=64. Block 16×16 = 256 threads. Ampere sm_86.
+ * nvcc -O3 -arch=sm_86 -I../include -c cuda/glint_htile.cu
+ * train_ok=false.
  */
 #include "../include/glint_meta.h"
 #include <cuda_bf16.h>
+#include <cuda_runtime.h>
 #include <stdint.h>
 
-#ifndef G_HTILE_M
-#define G_HTILE_M 64
-#define G_HTILE_N 64
-#define G_HTILE_K 64
-#endif
+#define TN 16
+#define TM 16
+#define TK 64
+#define STAGES 2
+#define HOLE_B (TK / 2) /* 32 */
 
-__global__ void glint_htile_s1_f32(
+static_assert(TK % 2 == 0, "even K");
+static_assert(HOLE_B % 16 == 0, "16B cp.async");
+
+__device__ __forceinline__ void cp16(void *smem, const void *gmem) {
+#if __CUDA_ARCH__ >= 800
+    unsigned sm = (unsigned)__cvta_generic_to_shared(smem);
+    asm volatile("cp.async.ca.shared.global [%0], [%1], 16;" ::"r"(sm), "l"(gmem));
+#else
+    *reinterpret_cast<uint4 *>(smem) = *reinterpret_cast<const uint4 *>(gmem);
+#endif
+}
+
+__device__ __forceinline__ void cp_commit() {
+#if __CUDA_ARCH__ >= 800
+    asm volatile("cp.async.commit_group;");
+#endif
+}
+
+__device__ __forceinline__ void cp_wait(int n) {
+#if __CUDA_ARCH__ >= 800
+    if (n == 0)
+        asm volatile("cp.async.wait_group 0;");
+    else
+        asm volatile("cp.async.wait_group 1;");
+#else
+    (void)n;
+#endif
+    __syncthreads();
+}
+
+__device__ void load_k_tile(
+    int s, int n0, int m0, int k0, int N, int M, int K,
+    const uint8_t *hole, const uint8_t *plug, const __nv_bfloat16 *x,
+    uint8_t sh_h[STAGES][TN][HOLE_B],
+    uint8_t sh_p[STAGES][TN][HOLE_B],
+    __nv_bfloat16 sh_x[STAGES][TM][TK])
+{
+    const int tid = threadIdx.y * blockDim.x + threadIdx.x; /* 0..255 */
+
+    /* hole: 16 rows × 32 B = 512 B → 32 × 16B. tid 0..31 */
+    if (tid < 32) {
+        const int row = tid / 2;       /* 0..15 */
+        const int off = (tid % 2) * 16; /* 0 or 16 */
+        const int n = n0 + row;
+        if (n < N && k0 < K) {
+            const int64_t i0 = (int64_t)n * (int64_t)K + k0;
+            cp16(&sh_h[s][row][off], hole + (i0 >> 1) + off);
+        }
+    }
+    /* plug: tid 32..63, same map */
+    if (tid >= 32 && tid < 64) {
+        const int t = tid - 32;
+        const int row = t / 2;
+        const int off = (t % 2) * 16;
+        const int n = n0 + row;
+        if (n < N && k0 < K) {
+            const int64_t i0 = (int64_t)n * (int64_t)K + k0;
+            cp16(&sh_p[s][row][off], plug + (i0 >> 1) + off);
+        }
+    }
+    /* X: 16×64 bf16 = 2048 B → 128 × 16B. tid walks 128 chunks. */
+    {
+        const int nch = (TM * TK * (int)sizeof(__nv_bfloat16)) / 16;
+        for (int c = tid; c < nch; c += 256) {
+            const int elem = (c * 16) / (int)sizeof(__nv_bfloat16);
+            const int row = elem / TK;
+            const int col = elem % TK;
+            const int m = m0 + row;
+            if (m < M && (k0 + col) < K)
+                cp16(&sh_x[s][row][col], x + (int64_t)m * K + k0 + col);
+        }
+    }
+    cp_commit();
+}
+
+__global__ void glint_htile_s3_f32(
     const uint8_t *__restrict__ hole,
     const uint8_t *__restrict__ plug,
     const float *__restrict__ absmax,
@@ -23,26 +101,54 @@ __global__ void glint_htile_s1_f32(
     float *__restrict__ y,
     int M, int N, int K, int blocksize)
 {
-    const int n0 = blockIdx.x * G_HTILE_N;
-    const int m0 = blockIdx.y * G_HTILE_M;
+    const int n0 = blockIdx.x * TN;
+    const int m0 = blockIdx.y * TM;
     const int tn = threadIdx.x;
     const int tm = threadIdx.y;
+
+    __shared__ uint8_t sh_h[STAGES][TN][HOLE_B];
+    __shared__ uint8_t sh_p[STAGES][TN][HOLE_B];
+    __shared__ __nv_bfloat16 sh_x[STAGES][TM][TK];
+
     float acc = 0.f;
-    for (int k0 = 0; k0 < K; k0 += G_HTILE_K) {
-        /* S3: cp.async hole+plug+x tiles here */
+    int cur = 0;
+    load_k_tile(0, n0, m0, 0, N, M, K, hole, plug, x, sh_h, sh_p, sh_x);
+
+    for (int k0 = 0; k0 < K; k0 += TK) {
+        const int nxt = k0 + TK;
+        if (nxt < K)
+            load_k_tile(cur ^ 1, n0, m0, nxt, N, M, K, hole, plug, x, sh_h, sh_p, sh_x);
+        cp_wait(nxt < K ? 1 : 0);
+
         if ((m0 + tm) < M && (n0 + tn) < N) {
             const int n = n0 + tn;
-            for (int kk = 0; kk < G_HTILE_K && (k0 + kk) < K; ++kk) {
-                const int i = n * K + (k0 + kk);
-                const uint8_t hb = hole[i >> 1];
-                const uint8_t pb = plug[i >> 1];
-                const uint8_t h = (i & 1) ? (uint8_t)((hb >> 4) & 15) : (uint8_t)(hb & 15);
-                const uint8_t p = (i & 1) ? (uint8_t)((pb >> 4) & 15) : (uint8_t)(pb & 15);
-                const float w = glint_inflate(h, p, absmax[i / blocksize]);
-                acc += w * __bfloat162float(x[(m0 + tm) * K + (k0 + kk)]);
+            for (int kk = 0; kk < TK && (k0 + kk) < K; ++kk) {
+                const uint8_t hb = sh_h[cur][tn][kk >> 1];
+                const uint8_t pb = sh_p[cur][tn][kk >> 1];
+                const uint8_t h = (kk & 1) ? (uint8_t)((hb >> 4) & 15) : (uint8_t)(hb & 15);
+                const uint8_t p = (kk & 1) ? (uint8_t)((pb >> 4) & 15) : (uint8_t)(pb & 15);
+                const int64_t i = (int64_t)n * K + (k0 + kk);
+                acc += glint_inflate(h, p, absmax[i / blocksize]) *
+                       __bfloat162float(sh_x[cur][tm][kk]);
             }
         }
+        cur ^= 1;
     }
     if ((m0 + tm) < M && (n0 + tn) < N)
-        y[(m0 + tm) * N + (n0 + tn)] = acc;
+        y[(int64_t)(m0 + tm) * N + (n0 + tn)] = acc;
+}
+
+extern "C" int launch_glint_htile_s3_f32(
+    const uint8_t *d_hole, const uint8_t *d_plug, const float *d_absmax,
+    const __nv_bfloat16 *d_x, float *d_y,
+    int M, int N, int K, int blocksize)
+{
+    if (!d_hole || !d_plug || !d_absmax || !d_x || !d_y)
+        return -1;
+    if (blocksize <= 0 || (K % 2) != 0)
+        return -2;
+    dim3 blk(TN, TM);
+    dim3 grid((N + TN - 1) / TN, (M + TM - 1) / TM);
+    glint_htile_s3_f32<<<grid, blk>>>(d_hole, d_plug, d_absmax, d_x, d_y, M, N, K, blocksize);
+    return cudaGetLastError() == cudaSuccess ? 0 : -3;
 }
