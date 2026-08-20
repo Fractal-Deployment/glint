@@ -46,6 +46,15 @@ Host board (sandbox, toy 8×64×64 Gaussian):
 - Inner-loop PCIe
 - S5 MMA this slice (L1 after L0 green: H-TILE `cp.async` hole+plug, `GLINT_CELLS[h][p]`, then `mma.sync`)
 
-## Done when
+## After L0 green — automatic train
 
-`ORCH_GLINT_PIN=...` 1-step smoke on 3060 uses **GPU-expanded** GLINT weights; unset env is NF4; evidence file committed; pushed.
+Driver already in glint (do not re-simulate):
+
+```bash
+bash scripts/glint_auto.sh --src /path/to/bf16 --course tdc_v2 --steps 8 --orch $PWD
+```
+
+Wire `ORCH_GLINT_PIN` in `scripts/run_tdc_muon_course.sh` / `pin_weights_env.sh` so that when the env is set, the product runner loads the GLINT pin instead of the Unsloth NF4 pin. Course aliases: `tdc_v2` `tdc_v1` `a` `b` or a jsonl path.
+
+Kernel is **not** generated per model. Build `libglint_encode.so` once.
+
