@@ -23,6 +23,11 @@ int glint_encode_f32_host(
 int glint_encode_n_absmax(int64_t n, int blocksize);
 int glint_encode_n_packed(int64_t n);
 
+/* L0 load: packed hole+plug → f32 on GPU, copy out. */
+int glint_expand_packed_to_f32_host(
+    const uint8_t *hole_packed, const uint8_t *plug_packed, const float *absmax,
+    int64_t n, int blocksize, float *out_f32);
+
 #ifdef __cplusplus
 }
 #endif

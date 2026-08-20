@@ -85,28 +85,41 @@ __device__ __forceinline__ int nearest16(const float *tab, float v) {
     return best;
 }
 
-__global__ void k_encode_unpacked(
-    const float *w, const float *absmax, uint8_t *hole, uint8_t *plug, int64_t n, int bs)
+__global__ void k_encode_pack(
+    const float *w, const float *absmax, uint8_t *hole_pk, uint8_t *plug_pk, int64_t n, int bs)
 {
-    int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n)
-        return;
-    float s = absmax[i / bs];
-    float v = (s == 0.f) ? 0.f : (w[i] / s);
-    int h = nearest16(d_parent, v);
-    int p = nearest16(d_cells[h], v);
-    hole[i] = (uint8_t)h;
-    plug[i] = (uint8_t)p;
-}
-
-__global__ void k_pack(const uint8_t *src, uint8_t *dst, int64_t n) {
     int64_t e = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
     int64_t npack = (n + 1) / 2;
     if (e >= npack)
         return;
-    uint8_t a = src[e * 2];
-    uint8_t b = (e * 2 + 1 < n) ? src[e * 2 + 1] : 0;
-    dst[e] = (uint8_t)((a & 15) | ((b & 15) << 4));
+    int64_t i0 = e * 2;
+    int64_t i1 = i0 + 1;
+    float s0 = absmax[i0 / bs];
+    float v0 = (s0 == 0.f) ? 0.f : (w[i0] / s0);
+    int h0 = nearest16(d_parent, v0);
+    int p0 = nearest16(d_cells[h0], v0);
+    int h1 = 0, p1 = 0;
+    if (i1 < n) {
+        float s1 = absmax[i1 / bs];
+        float v1 = (s1 == 0.f) ? 0.f : (w[i1] / s1);
+        h1 = nearest16(d_parent, v1);
+        p1 = nearest16(d_cells[h1], v1);
+    }
+    hole_pk[e] = (uint8_t)((h0 & 15) | ((h1 & 15) << 4));
+    plug_pk[e] = (uint8_t)((p0 & 15) | ((p1 & 15) << 4));
+}
+
+__global__ void k_expand(
+    const uint8_t *hole_pk, const uint8_t *plug_pk, const float *absmax, float *out, int64_t n, int bs)
+{
+    int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n)
+        return;
+    uint8_t hb = hole_pk[i >> 1];
+    uint8_t pb = plug_pk[i >> 1];
+    uint8_t h = (i & 1) ? (uint8_t)((hb >> 4) & 15) : (uint8_t)(hb & 15);
+    uint8_t p = (i & 1) ? (uint8_t)((pb >> 4) & 15) : (uint8_t)(pb & 15);
+    out[i] = d_cells[h][p] * absmax[i / bs];
 }
 
 static int load_cells() {
@@ -137,13 +150,9 @@ static int encode_dev_f32(const float *d_w, int64_t n, int blocksize, uint8_t *h
     int nblocks = glint_encode_n_absmax(n, blocksize);
     int npack = glint_encode_n_packed(n);
     float *d_am = NULL;
-    uint8_t *d_hu = NULL, *d_pu = NULL, *d_hp = NULL, *d_pp = NULL;
+    uint8_t *d_hp = NULL, *d_pp = NULL;
     int rc = -3;
     if (cudaMalloc(&d_am, (size_t)nblocks * sizeof(float)) != cudaSuccess)
-        goto done;
-    if (cudaMalloc(&d_hu, (size_t)n) != cudaSuccess)
-        goto done;
-    if (cudaMalloc(&d_pu, (size_t)n) != cudaSuccess)
         goto done;
     if (cudaMalloc(&d_hp, (size_t)npack) != cudaSuccess)
         goto done;
@@ -153,11 +162,8 @@ static int encode_dev_f32(const float *d_w, int64_t n, int blocksize, uint8_t *h
     k_absmax<<<nblocks, 256>>>(d_w, d_am, n, blocksize);
     {
         int threads = 256;
-        int blocks = (int)((n + threads - 1) / threads);
-        k_encode_unpacked<<<blocks, threads>>>(d_w, d_am, d_hu, d_pu, n, blocksize);
         int pblocks = (int)((npack + threads - 1) / threads);
-        k_pack<<<pblocks, threads>>>(d_hu, d_hp, n);
-        k_pack<<<pblocks, threads>>>(d_pu, d_pp, n);
+        k_encode_pack<<<pblocks, threads>>>(d_w, d_am, d_hp, d_pp, n, blocksize);
     }
     if (cudaDeviceSynchronize() != cudaSuccess)
         goto done;
@@ -170,8 +176,6 @@ static int encode_dev_f32(const float *d_w, int64_t n, int blocksize, uint8_t *h
     rc = 0;
 done:
     cudaFree(d_am);
-    cudaFree(d_hu);
-    cudaFree(d_pu);
     cudaFree(d_hp);
     cudaFree(d_pp);
     return rc;
@@ -212,5 +216,48 @@ int glint_encode_bf16_host(const uint16_t *w_bf16, int64_t n, int blocksize, uin
 done:
     cudaFree(d_b);
     cudaFree(d_w);
+    return rc;
+}
+
+int glint_expand_packed_to_f32_host(
+    const uint8_t *hole_packed, const uint8_t *plug_packed, const float *absmax,
+    int64_t n, int blocksize, float *out_f32)
+{
+    if (load_cells() != 0)
+        return -2;
+    int npack = glint_encode_n_packed(n);
+    int nblocks = glint_encode_n_absmax(n, blocksize);
+    uint8_t *d_h = NULL, *d_p = NULL;
+    float *d_am = NULL, *d_o = NULL;
+    int rc = -3;
+    if (cudaMalloc(&d_h, (size_t)npack) != cudaSuccess)
+        goto done;
+    if (cudaMalloc(&d_p, (size_t)npack) != cudaSuccess)
+        goto done;
+    if (cudaMalloc(&d_am, (size_t)nblocks * sizeof(float)) != cudaSuccess)
+        goto done;
+    if (cudaMalloc(&d_o, (size_t)n * sizeof(float)) != cudaSuccess)
+        goto done;
+    if (cudaMemcpy(d_h, hole_packed, (size_t)npack, cudaMemcpyHostToDevice) != cudaSuccess)
+        goto done;
+    if (cudaMemcpy(d_p, plug_packed, (size_t)npack, cudaMemcpyHostToDevice) != cudaSuccess)
+        goto done;
+    if (cudaMemcpy(d_am, absmax, (size_t)nblocks * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess)
+        goto done;
+    {
+        int threads = 256;
+        int blocks = (int)((n + threads - 1) / threads);
+        k_expand<<<blocks, threads>>>(d_h, d_p, d_am, d_o, n, blocksize);
+    }
+    if (cudaDeviceSynchronize() != cudaSuccess)
+        goto done;
+    if (cudaMemcpy(out_f32, d_o, (size_t)n * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess)
+        goto done;
+    rc = 0;
+done:
+    cudaFree(d_h);
+    cudaFree(d_p);
+    cudaFree(d_am);
+    cudaFree(d_o);
     return rc;
 }

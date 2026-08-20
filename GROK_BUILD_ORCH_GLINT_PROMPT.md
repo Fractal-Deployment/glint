@@ -1,22 +1,51 @@
-# Paste into Grok Build CLI on training_orchestrator
+# Grok Build CLI — training_orchestrator — GLINT on the GPU
 
-Load **GLINT** pins from https://github.com/Jadon-Fox/glint (`schema: glint_pin_v1`).
+You are on a machine **with an RTX 3060 and nvcc**. Do **not** write a simulator. Do **not** run Python H-TILE as the product. Wire **real CUDA** load + expand (then existing GEMM). Evidence on device.
 
-GLINT = **Gaussian Location INside Tile**. Not NF8. Not INT8.
-`w = GLINT_CELLS[hole_nibble][plug_nibble] * absmax[i/64]`
+Repo to copy from: https://github.com/Jadon-Fox/glint  
+`schema: glint_pin_v1`  
+`w = GLINT_CELLS[hole][plug] * absmax[i/64]`
 
-Copy `include/glint_cells.h` + `include/glint_meta.h`. CUDA only.
+## Sim already ran (do not redo)
 
-## L0 (this prompt)
+Host board (sandbox, toy 8×64×64 Gaussian):
 
-1. `pin.json` schema `glint_pin_v1` + `model.safetensors`. Fail-closed.
-2. `{stem}.weight` hole U8, `{stem}.weight.glint_plug` U8, `{stem}.weight.absmax` F32, `_glint_cells` optional.
-3. Expand at load to f32 registry (Mode A). Env `ORCH_GLINT_PIN=/path`. Unset = NF4 product path.
-4. Board: `base_dtype=glint_expanded` `train_ok=false` `measured_omega=false` `G1=OPEN`
-5. Tiny pin from `python3 glint_pin.py` for CI.
+| metric | value |
+|---|---|
+| GLINT vs f32 weight RMSE | 1.29e-4 |
+| parent-only (no plug) RMSE | 1.85e-3 |
+| H-TILE f32 vs decoded GLINT max_abs | **0** |
+| bf16 fragment vs f32 MAC max_abs | 8.2e-5 |
+| Y GLINT vs true | 6.4e-5 |
+| Y parent vs true | 9.0e-4 |
 
-## L1 after L0
+**Optimizations already applied in glint:** encode packs in-kernel (no unpacked n-byte temps). Expand kernel exists: `glint_expand_packed_to_f32_host`.
 
-H-TILE S3: `cp.async` hole **and** plug. Lookup `GLINT_CELLS[h][p]`. Prefetch plug[L+1] stream 1. Then S5 `mma.sync`. Goldens vs host `glint_htile_sim.py` (expect bf16 fragment offset — see OFFSETS in that repo).
+**Your goldens on GPU:** expand vs a tiny pin, max_abs vs host decode `< 1e-5` in f32. Do **not** chase bf16 MMA in this slice.
 
-Do not: rename to NF8, merge with INT8 pin, train_ok=true, Mojo.
+## Job (L0 — stop here)
+
+1. Copy `include/glint_cells.h`, `include/glint_meta.h`, `include/glint_encode.h`, `cuda/glint_encode.cu` into orch. `bash scripts/build_glint_cuda.sh` or nvcc into orch `lib/`.
+2. Env `ORCH_GLINT_PIN=/abs/path/to/glint-pin`. Unset = **bit-identical NF4 path**. Do not invent `ORCH_BASE_PACK`. Do not change product default.
+3. Detect `pin.json` `schema=glint_pin_v1` + `model.safetensors`. Fail-closed.
+4. Per linear: `weight` hole U8, `weight.glint_plug` U8, `weight.absmax` F32. Norms copy.
+5. **GPU expand** `glint_expand_packed_to_f32_host` (or device-ptr variant you add — prefer **leave f32 on device**, no host round-trip of the full W). Upload into existing registry slots.
+6. One product step on **existing f32/f16 GEMM**. Board:
+   - `base_dtype=glint_expanded`
+   - `train_ok=false` `measured_omega=false` `G1=OPEN`
+7. CI: tiny pin (`glint_pin.py --allow-cpu` only for the fixture; product encode is CUDA).
+8. Evidence JSON: nsys optional; **required** max_abs expand vs host decode on the tiny pin.
+
+## Do not
+
+- Python tile GEMM in orch
+- `train_ok=true`
+- Merge with INT8 pin
+- Call it NF8
+- Mojo
+- Inner-loop PCIe
+- S5 MMA this slice (L1 after L0 green: H-TILE `cp.async` hole+plug, `GLINT_CELLS[h][p]`, then `mma.sync`)
+
+## Done when
+
+`ORCH_GLINT_PIN=...` 1-step smoke on 3060 uses **GPU-expanded** GLINT weights; unset env is NF4; evidence file committed; pushed.

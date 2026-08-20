@@ -25,4 +25,5 @@ Encode is **CUDA**: raw BF16 bytes go to the GPU; no Python float walk. That was
 
 INT8 pin stays in [nf4-to-int8](https://github.com/Jadon-Fox/nf4-to-int8) (`--to int8`). Both from BF16; different 256.
 
-Sim is **not** CUDA. Offsets are listed by `glint_offset.py` (bf16 fragments, no `cp.async`, no `mma.sync`). Kernel sketch: `cuda/glint_htile.cu`. Orch L0/L1: `GROK_BUILD_ORCH_GLINT_PROMPT.md`. `train_ok=false`.
+Sim is **done** (offset board). Product is CUDA encode + CUDA expand. Orch: paste `GROK_BUILD_ORCH_GLINT_PROMPT.md` into Grok Build on the 3060.
+
