@@ -1,0 +1,28 @@
+# GLINT
+
+**Gaussian Location INside Tile.**
+
+A 4-bit **plug** names which child lives inside a 16-cell Gaussian **parent tile**. Reconstruction is a lookup, then H-TILE GEMM. Not NF8. Not uniform INT8. Not the `nf4-to-int8` program.
+
+```
+Ŵ = GLINT_CELLS[hole][plug] × absmax
+```
+
+Hole = parent cell (VRAM, same pack as H-TILE qpack).  
+Plug = location inside that cell (4 bits). Drop it in → the weight is recognized.
+
+```bash
+# on the 3060 (nvcc)
+bash scripts/build_glint_cuda.sh
+python3 glint_pin.py --src /path/to/bf16 --out ./glint-pin          # GPU encode
+python3 glint_pin.py --src tiny --out ./t --allow-cpu               # tests only
+python3 glint_offset.py
+python3 test_glint.py
+```
+
+Encode is **CUDA**: raw BF16 bytes go to the GPU; no Python float walk. That was the hour-long path. `libglint_encode.so` required unless `--allow-cpu`.
+
+
+INT8 pin stays in [nf4-to-int8](https://github.com/Jadon-Fox/nf4-to-int8) (`--to int8`). Both from BF16; different 256.
+
+Sim is **not** CUDA. Offsets are listed by `glint_offset.py` (bf16 fragments, no `cp.async`, no `mma.sync`). Kernel sketch: `cuda/glint_htile.cu`. Orch L0/L1: `GROK_BUILD_ORCH_GLINT_PROMPT.md`. `train_ok=false`.
