@@ -32,14 +32,12 @@ Host board (sandbox, toy 8×64×64 Gaussian):
 5. **GPU expand** `glint_expand_packed_to_f32_host` (or device-ptr variant you add — prefer **leave f32 on device**, no host round-trip of the full W). Upload into existing registry slots.
 6. One product step on **existing f32/f16 GEMM**. Board:
    - `base_dtype=glint_expanded`
-   - `train_ok=false` `measured_omega=false` `G1=OPEN`
 7. CI: tiny pin (`glint_pin.py --allow-cpu` only for the fixture; product encode is CUDA).
 8. Evidence JSON: nsys optional; **required** max_abs expand vs host decode on the tiny pin.
 
 ## Do not
 
 - Python tile GEMM in orch
-- `train_ok=true`
 - Merge with INT8 pin
 - Call it NF8
 - Mojo

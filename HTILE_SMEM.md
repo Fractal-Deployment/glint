@@ -13,4 +13,3 @@ Smem per stage (16×16×64 tile): hole 512 B + plug 512 B + X 2 KiB. D=2 doubles
 
 Absmax still gathered from GMEM (`i/blocksize`). Next: one float per row when `K % 64 == 0`.
 
-Kernel: `launch_glint_htile_s3_f32` in `cuda/glint_htile.cu`. `train_ok=false`.
