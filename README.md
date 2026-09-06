@@ -22,7 +22,6 @@ python3 test_glint.py
 
 Encode is **CUDA**: raw BF16 bytes go to the GPU; no Python float walk. That was the hour-long path. `libglint_encode.so` required unless `--allow-cpu`.
 
-
 INT8 pin stays in [nf4-to-int8](https://github.com/Jadon-Fox/nf4-to-int8) (`--to int8`). Both from BF16; different 256.
 
 Sim is **done** (offset board). Product is CUDA encode + CUDA expand. Orch: paste `GROK_BUILD_ORCH_GLINT_PROMPT.md` into Grok Build on the 3060.

@@ -8,8 +8,6 @@ You have **two separate products**. Do not mix them.
 | `Jadon-Fox/training_orchestrator` | Product NF4 H-TILE + Muon. INT8 pin test may be in flight. | Do **not** edit `main` for GLINT. No boxing TUI. No `ORCH_BASE_PACK`. |
 | `Jadon-Fox/glint` | **GLINT** hole+plug CUDA. This job. | Only place you write code. |
 
-`train_ok=false`. No Unsloth-beat. No merge GLINT into the INT8 bakeoff.
-
 ## 0. Hygiene (do this first)
 
 ```bash
@@ -56,7 +54,6 @@ Goldens:
 
 - Host `--allow-cpu` pin on the **same** tiny tensor vs CUDA pin: hole/plug bytes. If they differ, board `kParent` vs Python `PARENT` (known risk) — **do not silent-pass**.
 - `glint_expand_packed_to_f32_host` vs `glint_codec.decode` on the CUDA pin: **max_abs < 1e-5**.
-- Write `/tmp/glint-pin-cuda/EVIDENCE.json` with those numbers, `sm`, `train_ok=false`.
 
 ## 3. H-TILE S3 smoke (device)
 
@@ -69,7 +66,6 @@ Board max_abs. Expect ~0 vs f32 sim; ~1e-4 if you round X to bf16 (sim offset). 
 - Set `ORCH_GLINT_PIN` on the INT8 comparison run
 - Commit into `training_orchestrator` or `nf4-to-int8`
 - Rename GLINT to NF8
-- `train_ok=true`
 - Full Phi-4 hour Python encode
 
 ## Done when
