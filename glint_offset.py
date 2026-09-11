@@ -2,7 +2,7 @@
 """Characterize host-sim vs CUDA-like GLINT H-TILE offsets.
 
 Assumes the sim is NOT the GPU. Boards numeric + roofline gaps.
-train_ok=false. No 3060 in this process.
+training_cleared=false. No 3060 in this process.
 """
 from __future__ import annotations
 
@@ -90,7 +90,7 @@ def run(M=8, N=64, K=64, blocksize=64, tile_k=64, seed=0) -> dict:
                 "shows_up_in": "max_abs goldens vs launch",
             },
         ],
-        "train_ok": False,
+        "training_cleared": False,
     }
 
 

@@ -2,7 +2,7 @@
 
 S1 dataflow: K-tiles, inflate GLINT_CELLS[h][p]*absmax, f32 MAC.
 Optional bf16 round-trip on fragments (CUDA-like offset).
-train_ok=false.
+training_cleared=false.
 """
 from __future__ import annotations
 

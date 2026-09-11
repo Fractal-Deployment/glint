@@ -1,6 +1,6 @@
 /* GLINT load ABI. hole=parent cell nibble, plug=child 0..15.
  * w = GLINT_CELLS[hole][plug] * absmax[i/blocksize]
- * L0 expand-at-load. L1 H-TILE lookup. CUDA. train_ok=false.
+ * L0 expand-at-load. L1 H-TILE lookup. CUDA. training_cleared=false.
  */
 #ifndef GLINT_META_H_
 #define GLINT_META_H_

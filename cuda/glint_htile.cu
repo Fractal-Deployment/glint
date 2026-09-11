@@ -5,7 +5,7 @@
  *
  * Tile: M=16 N=16 K=64. Block 16×16 = 256 threads. Ampere sm_86.
  * nvcc -O3 -arch=sm_86 -I../include -c cuda/glint_htile.cu
- * train_ok=false.
+ * training_cleared=false.
  */
 #include "../include/glint_meta.h"
 #include <cuda_bf16.h>

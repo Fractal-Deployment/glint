@@ -54,7 +54,7 @@ def convert(
             "n_linears": len(linears),
             "n_keep": len(keep),
             "blocksize": blocksize,
-            "train_ok": False,
+            "training_cleared": False,
         }
         cuda_lib = load_cuda()
         if dry_run:
@@ -90,7 +90,7 @@ def convert(
             tensors.append((stem + ".weight.glint_plug", "U8", (len(plug_b), 1), plug_b))
             tensors.append((stem + ".weight.absmax", "F32", (len(am),), pack_f32(am)))
             state = json.dumps(
-                {"quant_type": "glint", "blocksize": blocksize, "shape": list(info.shape), "train_ok": False},
+                {"quant_type": "glint", "blocksize": blocksize, "shape": list(info.shape), "training_cleared": False},
                 separators=(",", ":"),
             ).encode()
             tensors.append((stem + ".weight.glint_state", "U8", (len(state),), state))
@@ -109,7 +109,7 @@ def convert(
     write_safetensors(
         str(out / "model.safetensors"),
         tensors,
-        metadata={"format": "pt", "quantization": "glint", "train_ok": "false"},
+        metadata={"format": "pt", "quantization": "glint", "training_cleared": "false"},
     )
     pin = {
         "schema": "glint_pin_v1",
@@ -124,7 +124,7 @@ def convert(
             else None
         ),
         "backend": reports[0]["backend"] if reports else None,
-        "train_ok": False,
+        "training_cleared": False,
         "note": "hole=parent Gaussian cell, plug=child index. H-TILE inflate GLINT_CELLS[h][p]*absmax",
     }
     (out / "pin.json").write_text(json.dumps(pin, indent=2) + "\n")

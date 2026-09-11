@@ -39,7 +39,7 @@ def test_pin_and_htile():
         dst = Path(td) / "pin"
         got = convert(src, dst, allow_cpu=True)
         assert got["pin"]["schema"] == "glint_pin_v1"
-        assert got["pin"]["train_ok"] is False
+        assert got["pin"]["training_cleared"] is False
         with SafeTensorsFile(str(dst / "model.safetensors")) as st:
             assert "lin.weight.glint_plug" in st.tensors
             assert "_glint_cells" in st.tensors
@@ -56,11 +56,11 @@ def test_offset_board():
     b = offset_run(M=4, N=32, K=64, seed=1)
     assert b["htile_f32_vs_ref_glint_max_abs"] < 1e-6
     assert b["y_glint_vs_true_max_abs"] < b["y_parent_vs_true_max_abs"]
-    assert b["train_ok"] is False
+    assert b["training_cleared"] is False
 
 
 if __name__ == "__main__":
     test_codec_plug_is_location()
     test_pin_and_htile()
     test_offset_board()
-    print("TEST_GLINT_GREEN codec pin htile_sim offset NOT_train_ok")
+    print("TEST_GLINT_GREEN codec pin htile_sim offset not_training_cleared")
