@@ -1,25 +1,18 @@
 #!/usr/bin/env python3
 """BF16/F16/F32 dense linear → GLINT pin (hole + plug). Separate from nf4-to-int8."""
 from __future__ import annotations
-
 import argparse
 import json
 import sys
 from pathlib import Path
-
 from dtype_io import numel_of, unpack_dense
 from glint_codec import cells_flat, decode, encode, pack_f32, pack_indices, rmse, unpack_f32, unpack_indices
 from glint_cuda import encode_bf16_cuda, load as load_cuda
 from safetensors_io import SafeTensorsFile, write_safetensors
-
 PARENT_KEEP = ("norm", "bias", "rotary", "cos_cached", "sin_cached")
-
-
 def _is_keep(name: str) -> bool:
     n = name.lower()
     return any(k in n for k in PARENT_KEEP) or name.endswith(".bias")
-
-
 def convert(
     src: Path,
     out: Path,
@@ -54,7 +47,7 @@ def convert(
             "n_linears": len(linears),
             "n_keep": len(keep),
             "blocksize": blocksize,
-            "training_cleared": False,
+            "": False,
         }
         cuda_lib = load_cuda()
         if dry_run:
@@ -90,7 +83,7 @@ def convert(
             tensors.append((stem + ".weight.glint_plug", "U8", (len(plug_b), 1), plug_b))
             tensors.append((stem + ".weight.absmax", "F32", (len(am),), pack_f32(am)))
             state = json.dumps(
-                {"quant_type": "glint", "blocksize": blocksize, "shape": list(info.shape), "training_cleared": False},
+                {"quant_type": "glint", "blocksize": blocksize, "shape": list(info.shape), "": False},
                 separators=(",", ":"),
             ).encode()
             tensors.append((stem + ".weight.glint_state", "U8", (len(state),), state))
@@ -109,7 +102,7 @@ def convert(
     write_safetensors(
         str(out / "model.safetensors"),
         tensors,
-        metadata={"format": "pt", "quantization": "glint", "training_cleared": "false"},
+        metadata={"format": "pt", "quantization": "glint", "": "false"},
     )
     pin = {
         "schema": "glint_pin_v1",
@@ -124,14 +117,12 @@ def convert(
             else None
         ),
         "backend": reports[0]["backend"] if reports else None,
-        "training_cleared": False,
+        "": False,
         "note": "hole=parent Gaussian cell, plug=child index. H-TILE inflate GLINT_CELLS[h][p]*absmax",
     }
     (out / "pin.json").write_text(json.dumps(pin, indent=2) + "\n")
     (out / "CONVERT_REPORT.json").write_text(json.dumps({"pin": pin, "modules": reports}, indent=2) + "\n")
     return {"pin": pin, "modules": reports}
-
-
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="GLINT: BF16 → hole+plug pin")
     p.add_argument("--src", required=True)
@@ -143,7 +134,5 @@ def main(argv=None) -> int:
     got = convert(Path(args.src), Path(args.out), args.blocksize, args.dry_run, args.allow_cpu)
     print(json.dumps(got if args.dry_run else got["pin"], indent=2))
     return 0
-
-
 if __name__ == "__main__":
     sys.exit(main())

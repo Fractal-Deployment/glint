@@ -1,23 +1,19 @@
 /* GLINT encode on GPU. One thread per weight after a block absmax reduce.
  * nvcc -O3 -arch=sm_86 -shared -Xcompiler -fPIC -o libglint_encode.so \
- *      cuda/glint_encode.cu -Iinclude
+ * cuda/glint_encode.cu -Iinclude
  */
 #include "../include/glint_encode.h"
 #include "../include/glint_cells.h"
 #include "../include/glint_meta.h"
-
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
 #define GLINT_PARENT_N 16
 #define GLINT_CHILD_N 16
-
 __constant__ float d_parent[16];
 __constant__ float d_cells[16][16];
-
 static const float kParent[16] = {
     -1.0f,
     -0.696192801f,
@@ -36,14 +32,12 @@ static const float kParent[16] = {
     0.722956836f,
     1.0f,
 };
-
 __global__ void k_bf16_to_f32(const uint16_t *src, float *dst, int64_t n) {
     int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n)
         return;
     dst[i] = __bfloat162float(*reinterpret_cast<const __nv_bfloat16 *>(&src[i]));
 }
-
 __global__ void k_absmax(const float *w, float *absmax, int64_t n, int bs) {
     int b = (int)blockIdx.x;
     int64_t base = (int64_t)b * bs;
@@ -70,7 +64,6 @@ __global__ void k_absmax(const float *w, float *absmax, int64_t n, int bs) {
     if (threadIdx.x == 0)
         absmax[b] = sh[0];
 }
-
 __device__ __forceinline__ int nearest16(const float *tab, float v) {
     int best = 0;
     float bd = fabsf(v - tab[0]);
@@ -84,7 +77,6 @@ __device__ __forceinline__ int nearest16(const float *tab, float v) {
     }
     return best;
 }
-
 __global__ void k_encode_pack(
     const float *w, const float *absmax, uint8_t *hole_pk, uint8_t *plug_pk, int64_t n, int bs)
 {
@@ -108,7 +100,6 @@ __global__ void k_encode_pack(
     hole_pk[e] = (uint8_t)((h0 & 15) | ((h1 & 15) << 4));
     plug_pk[e] = (uint8_t)((p0 & 15) | ((p1 & 15) << 4));
 }
-
 __global__ void k_expand(
     const uint8_t *hole_pk, const uint8_t *plug_pk, const float *absmax, float *out, int64_t n, int bs)
 {
@@ -121,7 +112,6 @@ __global__ void k_expand(
     uint8_t p = (i & 1) ? (uint8_t)((pb >> 4) & 15) : (uint8_t)(pb & 15);
     out[i] = d_cells[h][p] * absmax[i / bs];
 }
-
 static int load_cells() {
     static int once = 0;
     if (once)
@@ -135,15 +125,12 @@ static int load_cells() {
     once = 1;
     return 0;
 }
-
 int glint_encode_n_absmax(int64_t n, int blocksize) {
     if (blocksize <= 0)
         return 0;
     return (int)((n + blocksize - 1) / blocksize);
 }
-
 int glint_encode_n_packed(int64_t n) { return (int)((n + 1) / 2); }
-
 static int encode_dev_f32(const float *d_w, int64_t n, int blocksize, uint8_t *h_hole, uint8_t *h_plug, float *h_am) {
     if (load_cells() != 0)
         return -2;
@@ -158,7 +145,6 @@ static int encode_dev_f32(const float *d_w, int64_t n, int blocksize, uint8_t *h
         goto done;
     if (cudaMalloc(&d_pp, (size_t)npack) != cudaSuccess)
         goto done;
-
     k_absmax<<<nblocks, 256>>>(d_w, d_am, n, blocksize);
     {
         int threads = 256;
@@ -180,7 +166,6 @@ done:
     cudaFree(d_pp);
     return rc;
 }
-
 int glint_encode_f32_host(const float *w, int64_t n, int blocksize, uint8_t *hole_packed, uint8_t *plug_packed, float *absmax) {
     float *d_w = NULL;
     int rc = -1;
@@ -194,7 +179,6 @@ int glint_encode_f32_host(const float *w, int64_t n, int blocksize, uint8_t *hol
     cudaFree(d_w);
     return rc;
 }
-
 int glint_encode_bf16_host(const uint16_t *w_bf16, int64_t n, int blocksize, uint8_t *hole_packed, uint8_t *plug_packed, float *absmax) {
     uint16_t *d_b = NULL;
     float *d_w = NULL;
@@ -218,7 +202,6 @@ done:
     cudaFree(d_w);
     return rc;
 }
-
 int glint_expand_packed_to_f32_host(
     const uint8_t *hole_packed, const uint8_t *plug_packed, const float *absmax,
     int64_t n, int blocksize, float *out_f32)

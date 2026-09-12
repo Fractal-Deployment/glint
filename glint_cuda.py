@@ -1,15 +1,11 @@
 """ctypes to libglint_encode.so — BF16 blob stays packed until the GPU."""
 from __future__ import annotations
-
 import ctypes
 import os
 from pathlib import Path
 from typing import Optional, Tuple
-
 _LIB = None
 _ERR = None
-
-
 def lib_path() -> Optional[Path]:
     env = os.environ.get("GLINT_ENCODE_SO")
     if env:
@@ -20,8 +16,6 @@ def lib_path() -> Optional[Path]:
         if p.is_file():
             return p
     return None
-
-
 def load():
     global _LIB, _ERR
     if _LIB is not None:
@@ -46,8 +40,6 @@ def load():
     lib.glint_encode_bf16_host.restype = ctypes.c_int
     _LIB = lib
     return lib
-
-
 def encode_bf16_cuda(raw_bf16: bytes, n: int, blocksize: int = 64) -> Tuple[bytes, bytes, bytes]:
     lib = load()
     if lib is None:

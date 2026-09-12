@@ -1,34 +1,26 @@
 #!/usr/bin/env python3
 """Characterize host-sim vs CUDA-like GLINT H-TILE offsets.
-
 Assumes the sim is NOT the GPU. Boards numeric + roofline gaps.
-training_cleared=false. No 3060 in this process.
 """
 from __future__ import annotations
-
 import json
 import math
 import random
 import time
-
 from glint_codec import decode, decode_parent_only, encode, rmse
 from glint_htile_sim import gemm_ref_flat, htile_gemm_flat, max_abs_flat
-
-
 def demo_w(n: int, rng: random.Random) -> list:
     return [rng.gauss(0.0, 0.02) for _ in range(n)]
-
-
 def roofline(M: int, N: int, K: int) -> dict:
     """3060-class: GDDR6 ~360 GB/s, PCIe3 x16 ~16 GB/s, BF16 TC ~51 TFLOP/s peak (datasheet)."""
     flops = 2.0 * M * N * K
     gemm_s = flops / 51e12
     # GLINT GMEM: hole 4b + plug 4b = 1 byte/w + absmax 4B/64
     gmem = N * K * 1.0 + (N * K / 64.0) * 4
-    x_bytes = M * K * 2  # bf16 X
+    x_bytes = M * K * 2 # bf16 X
     y_bytes = M * N * 4
     bw_s = (gmem + x_bytes + y_bytes) / 360e9
-    pcie_plug = (N * K * 0.5) / 16e9  # 4-bit plug if cold from host
+    pcie_plug = (N * K * 0.5) / 16e9 # 4-bit plug if cold from host
     return {
         "flops": flops,
         "gemm_peak_s": gemm_s,
@@ -37,8 +29,6 @@ def roofline(M: int, N: int, K: int) -> dict:
         "note": "hide pcie_plug behind previous layer GEMM; never inside TILE_K",
         "bound": "gmem" if bw_s > gemm_s else "compute",
     }
-
-
 def run(M=8, N=64, K=64, blocksize=64, tile_k=64, seed=0) -> dict:
     rng = random.Random(seed)
     w = demo_w(N * K, rng)
@@ -90,9 +80,7 @@ def run(M=8, N=64, K=64, blocksize=64, tile_k=64, seed=0) -> dict:
                 "shows_up_in": "max_abs goldens vs launch",
             },
         ],
-        "training_cleared": False,
+        "": False,
     }
-
-
 if __name__ == "__main__":
     print(json.dumps(run(), indent=2))

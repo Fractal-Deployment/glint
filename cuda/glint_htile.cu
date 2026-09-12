@@ -5,22 +5,19 @@
  *
  * Tile: M=16 N=16 K=64. Block 16×16 = 256 threads. Ampere sm_86.
  * nvcc -O3 -arch=sm_86 -I../include -c cuda/glint_htile.cu
- * training_cleared=false.
+ * =false.
  */
 #include "../include/glint_meta.h"
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 #include <stdint.h>
-
 #define TN 16
 #define TM 16
 #define TK 64
 #define STAGES 2
 #define HOLE_B (TK / 2) /* 32 */
-
 static_assert(TK % 2 == 0, "even K");
 static_assert(HOLE_B % 16 == 0, "16B cp.async");
-
 __device__ __forceinline__ void cp16(void *smem, const void *gmem) {
 #if __CUDA_ARCH__ >= 800
     unsigned sm = (unsigned)__cvta_generic_to_shared(smem);
@@ -29,13 +26,11 @@ __device__ __forceinline__ void cp16(void *smem, const void *gmem) {
     *reinterpret_cast<uint4 *>(smem) = *reinterpret_cast<const uint4 *>(gmem);
 #endif
 }
-
 __device__ __forceinline__ void cp_commit() {
 #if __CUDA_ARCH__ >= 800
     asm volatile("cp.async.commit_group;");
 #endif
 }
-
 __device__ __forceinline__ void cp_wait(int n) {
 #if __CUDA_ARCH__ >= 800
     if (n == 0)
@@ -47,7 +42,6 @@ __device__ __forceinline__ void cp_wait(int n) {
 #endif
     __syncthreads();
 }
-
 __device__ void load_k_tile(
     int s, int n0, int m0, int k0, int N, int M, int K,
     const uint8_t *hole, const uint8_t *plug, const __nv_bfloat16 *x,
@@ -56,10 +50,9 @@ __device__ void load_k_tile(
     __nv_bfloat16 sh_x[STAGES][TM][TK])
 {
     const int tid = threadIdx.y * blockDim.x + threadIdx.x; /* 0..255 */
-
     /* hole: 16 rows × 32 B = 512 B → 32 × 16B. tid 0..31 */
     if (tid < 32) {
-        const int row = tid / 2;       /* 0..15 */
+        const int row = tid / 2; /* 0..15 */
         const int off = (tid % 2) * 16; /* 0 or 16 */
         const int n = n0 + row;
         if (n < N && k0 < K) {
@@ -92,7 +85,6 @@ __device__ void load_k_tile(
     }
     cp_commit();
 }
-
 __global__ void glint_htile_s3_f32(
     const uint8_t *__restrict__ hole,
     const uint8_t *__restrict__ plug,
@@ -105,21 +97,17 @@ __global__ void glint_htile_s3_f32(
     const int m0 = blockIdx.y * TM;
     const int tn = threadIdx.x;
     const int tm = threadIdx.y;
-
     __shared__ uint8_t sh_h[STAGES][TN][HOLE_B];
     __shared__ uint8_t sh_p[STAGES][TN][HOLE_B];
     __shared__ __nv_bfloat16 sh_x[STAGES][TM][TK];
-
     float acc = 0.f;
     int cur = 0;
     load_k_tile(0, n0, m0, 0, N, M, K, hole, plug, x, sh_h, sh_p, sh_x);
-
     for (int k0 = 0; k0 < K; k0 += TK) {
         const int nxt = k0 + TK;
         if (nxt < K)
             load_k_tile(cur ^ 1, n0, m0, nxt, N, M, K, hole, plug, x, sh_h, sh_p, sh_x);
         cp_wait(nxt < K ? 1 : 0);
-
         if ((m0 + tm) < M && (n0 + tn) < N) {
             const int n = n0 + tn;
             for (int kk = 0; kk < TK && (k0 + kk) < K; ++kk) {
@@ -137,7 +125,6 @@ __global__ void glint_htile_s3_f32(
     if ((m0 + tm) < M && (n0 + tn) < N)
         y[(int64_t)(m0 + tm) * N + (n0 + tn)] = acc;
 }
-
 extern "C" int launch_glint_htile_s3_f32(
     const uint8_t *d_hole, const uint8_t *d_plug, const float *d_absmax,
     const __nv_bfloat16 *d_x, float *d_y,

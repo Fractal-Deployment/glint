@@ -1,21 +1,13 @@
 """Host H-TILE simulator for GLINT.
-
 S1 dataflow: K-tiles, inflate GLINT_CELLS[h][p]*absmax, f32 MAC.
 Optional bf16 round-trip on fragments (CUDA-like offset).
-training_cleared=false.
 """
 from __future__ import annotations
-
 from typing import List, Sequence
-
 from dtype_io import pack_bf16, unpack_bf16
 from glint_codec import CELLS
-
-
 def _bf16(v: float) -> float:
     return unpack_bf16(pack_bf16([float(v)]))[0]
-
-
 def gemm_ref_flat(x: Sequence[float], w: Sequence[float], M: int, N: int, K: int) -> List[float]:
     y = [0.0] * (M * N)
     for m in range(M):
@@ -27,8 +19,6 @@ def gemm_ref_flat(x: Sequence[float], w: Sequence[float], M: int, N: int, K: int
                 s += x[xb + k] * w[wb + k]
             y[m * N + n] = s
     return y
-
-
 def htile_gemm_flat(
     x: Sequence[float],
     hole: Sequence[int],
@@ -58,8 +48,6 @@ def htile_gemm_flat(
                     s += xv * wtile[t]
                 y[m * N + n] = s
     return y
-
-
 def max_abs_flat(a: Sequence[float], b: Sequence[float]) -> float:
     m = 0.0
     for i in range(min(len(a), len(b))):
