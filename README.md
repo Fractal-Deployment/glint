@@ -1,6 +1,11 @@
 # GLINT
+**Concept SSOT (operator 2026-09-24):** [`CONCEPT_CANONICAL_2026-09-24.md`](CONCEPT_CANONICAL_2026-09-24.md) — fold/compress → unfold → conditional relational refinement. Card: `/home/workspace/lookup/cards/glint-concept.md`.
+
+**Current repository tip (implemented, narrower):**
 **Gaussian Location INside Tile.**
 A 4-bit **plug** names which child lives inside a 16-cell Gaussian **parent tile**. Reconstruction is a lookup, then H-TILE GEMM. Not NF8. Not uniform INT8. Not the `nf4-to-int8` program.
+
+Keep **designed / implemented / demonstrated** separate (`lookup/cards/canonicality-precedence.md`). Do not treat this README as proof of the full conceptual architecture or of latency-neutral unfolding.
 ```
 Ŵ = GLINT_CELLS[hole][plug] × absmax
 ```
