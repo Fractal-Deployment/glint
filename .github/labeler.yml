@@ -1,0 +1,27 @@
+area:cuda:
+  - changed-files:
+      - any-glob-to-any-file: 'cuda/**'
+
+area:mojo:
+  - changed-files:
+      - any-glob-to-any-file: 'mojo/**'
+
+area:include:
+  - changed-files:
+      - any-glob-to-any-file: 'include/**'
+
+area:tests:
+  - changed-files:
+      - any-glob-to-any-file: 'tests/**'
+
+area:scripts:
+  - changed-files:
+      - any-glob-to-any-file: 'scripts/**'
+
+area:docs:
+  - changed-files:
+      - any-glob-to-any-file: ['docs/**', '*.md']
+
+area:ci:
+  - changed-files:
+      - any-glob-to-any-file: '.github/**'

@@ -1,0 +1,38 @@
+name: Task / Experiment
+description: File a structured task, experiment, or kernel implementation item
+title: "[Task]: "
+labels: ["task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please provide the context, mechanism, and verification criteria for this task.
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: What specific capability, kernel, or invariant is being implemented or verified?
+      placeholder: Implement / verify ...
+    validations:
+      required: true
+  - type: dropdown
+    id: subsystem
+    attributes:
+      label: Subsystem
+      options:
+        - CUDA H-TILE Kernel
+        - VRAM Plug Streamer
+        - Memory-Mapped Safetensors
+        - Mojo / MAX Execution
+        - Benchmarks / Parity Tests
+        - Operational Scripts / CI
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification Criteria (Exit Code 0)
+      description: Exact test command, expected outputs, or hardware verification metric.
+      placeholder: bash scripts/... or nvcc ... (zero simulations)
+    validations:
+      required: true

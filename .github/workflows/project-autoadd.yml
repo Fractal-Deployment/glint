@@ -6,12 +6,25 @@ on:
     types: [opened, reopened]
 
 jobs:
-  add-to-projects:
+  triage-and-route:
     runs-on: ubuntu-latest
     permissions:
-      issues: read
-      pull-requests: read
+      issues: write
+      pull-requests: write
     steps:
+      - name: Auto-assign @Jadon-Fox
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = context.issue.number;
+            await github.rest.issues.addAssignees({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              assignees: ['Jadon-Fox']
+            });
+        continue-on-error: true
+
       - name: Add to GLINT Project 6 (Jadon-Fox)
         uses: actions/add-to-project@v1.0.2
         with:
