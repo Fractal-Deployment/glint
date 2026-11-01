@@ -1,7 +1,8 @@
 /* Real Phi-4-mini BF16 weights -> CUDA GLINT encode -> plugs streamed through
  * the two-slot streamer into H-TILE. Gates: streamed output is bit-identical to
- * the same H-TILE run with plugs resident (two passes, every released slot
- * overwritten with random bytes), and resident output matches a host decode
+ * the same H-TILE run with plugs resident over four back-to-back passes (the
+ * last two overwrite each slot with random bytes once its reader is released),
+ * and resident output matches a host decode
  * GEMM within a recursive-summation bound. Error against the BF16 GEMM of the
  * original weights is printed, not gated.
  *
@@ -43,7 +44,8 @@
     } while (0)
 
 static const int kBlocksize = 64;
-static const int kPasses = 2;
+static const int kPasses = 4;
+static int poisoned(int pass) { return pass >= kPasses / 2; }
 static const char *kMatrices[] = {"self_attn.qkv_proj", "self_attn.o_proj", "mlp.gate_up_proj", "mlp.down_proj"};
 
 typedef struct {
@@ -208,6 +210,7 @@ int main(int argc, char **argv) {
             REQUIRE(launch_glint_htile_s3_f32_stream(x->d_hole, d_slot, x->d_absmax, x->d_x, x->d_y_streamed[p],
                                               M, x->N, x->K, kBlocksize, compute_stream) == 0, "streamed launch %d", u);
             REQUIRE(glint_plug_streamer_release(streamer, u) == 0, "release %d", u);
+            if (!poisoned(p)) continue;
             CK(cudaEventRecord(released[u], compute_stream));
             CK(cudaStreamWaitEvent(copy_stream, released[u], 0));
             CK(cudaMemcpyAsync((void *)d_slot, poison, plug_bytes[u], cudaMemcpyHostToDevice, copy_stream));
@@ -216,7 +219,8 @@ int main(int argc, char **argv) {
     CK(cudaDeviceSynchronize());
 
     int failed = 0;
-    printf("streamed vs resident (bitwise, %d passes, released slots poisoned):\n", kPasses);
+    printf("streamed vs resident (bitwise, %d back-to-back passes; passes %d+ poison each released slot):\n",
+           kPasses, kPasses / 2);
     for (int u = 0; u < n_units; ++u) {
         const size_t ny = (size_t)M * units[u].N;
         float *res = download(units[u].d_y_resident, ny);
