@@ -16,11 +16,9 @@ struct GlintPlugStreamer {
     cudaStream_t compute_stream;
     cudaEvent_t h2d_b[64];
     cudaEvent_t h2d_e[64];
-    cudaEvent_t cmp_b[64];
-    cudaEvent_t cmp_e[64];
     cudaEvent_t stall_b[64];
     cudaEvent_t stall_e[64];
-    int has_started;
+    cudaEvent_t slot_free[2];
     GlintStreamerStats stats;
 };
 
@@ -49,7 +47,8 @@ extern "C" int glint_plug_streamer_create(
 
     /* Allocate 2 device slots in VRAM */
     for (int b = 0; b < 2; ++b) {
-        if (cudaMalloc((void **)&s->slot[b], max_b) != cudaSuccess) {
+        if (cudaMalloc((void **)&s->slot[b], max_b) != cudaSuccess ||
+            cudaEventCreateWithFlags(&s->slot_free[b], cudaEventDisableTiming) != cudaSuccess) {
             glint_plug_streamer_destroy(s);
             return -3;
         }
@@ -63,8 +62,6 @@ extern "C" int glint_plug_streamer_create(
         }
         if (cudaEventCreate(&s->h2d_b[l]) != cudaSuccess ||
             cudaEventCreate(&s->h2d_e[l]) != cudaSuccess ||
-            cudaEventCreate(&s->cmp_b[l]) != cudaSuccess ||
-            cudaEventCreate(&s->cmp_e[l]) != cudaSuccess ||
             cudaEventCreate(&s->stall_b[l]) != cudaSuccess ||
             cudaEventCreate(&s->stall_e[l]) != cudaSuccess)
         {
@@ -84,14 +81,14 @@ extern "C" void glint_plug_streamer_destroy(GlintPlugStreamer *s) {
     for (int b = 0; b < 2; ++b) {
         if (s->slot[b])
             cudaFree(s->slot[b]);
+        if (s->slot_free[b])
+            cudaEventDestroy(s->slot_free[b]);
     }
     for (int l = 0; l < s->n_layers; ++l) {
         if (s->pinned[l])
             cudaFreeHost(s->pinned[l]);
         if (s->h2d_b[l]) cudaEventDestroy(s->h2d_b[l]);
         if (s->h2d_e[l]) cudaEventDestroy(s->h2d_e[l]);
-        if (s->cmp_b[l]) cudaEventDestroy(s->cmp_b[l]);
-        if (s->cmp_e[l]) cudaEventDestroy(s->cmp_e[l]);
         if (s->stall_b[l]) cudaEventDestroy(s->stall_b[l]);
         if (s->stall_e[l]) cudaEventDestroy(s->stall_e[l]);
     }
@@ -113,12 +110,8 @@ extern "C" int glint_plug_streamer_start(GlintPlugStreamer *s) {
     if (!s || s->n_layers <= 0)
         return -1;
 
-    if (s->has_started && s->n_layers >= 2) {
-        int last_slot0_layer = (s->n_layers - 1) & ~1;
-        if (cudaStreamWaitEvent(s->copy_stream, s->cmp_e[last_slot0_layer], 0) != cudaSuccess)
-            return -5;
-    }
-    s->has_started = 1;
+    if (cudaStreamWaitEvent(s->copy_stream, s->slot_free[0], 0) != cudaSuccess)
+        return -5;
 
     /* Prefetch layer 0 into slot 0 */
     if (cudaEventRecord(s->h2d_b[0], s->copy_stream) != cudaSuccess)
@@ -146,10 +139,8 @@ extern "C" int glint_plug_streamer_acquire(
         int next_layer = layer + 1;
         int next_slot = next_layer & 1;
 
-        if (layer >= 1) {
-            if (cudaStreamWaitEvent(s->copy_stream, s->cmp_e[layer - 1], 0) != cudaSuccess)
-                return -2;
-        }
+        if (cudaStreamWaitEvent(s->copy_stream, s->slot_free[next_slot], 0) != cudaSuccess)
+            return -2;
 
         if (cudaEventRecord(s->h2d_b[next_layer], s->copy_stream) != cudaSuccess)
             return -3;
@@ -171,9 +162,6 @@ extern "C" int glint_plug_streamer_acquire(
     if (cudaEventRecord(s->stall_e[layer], s->compute_stream) != cudaSuccess)
         return -8;
 
-    if (cudaEventRecord(s->cmp_b[layer], s->compute_stream) != cudaSuccess)
-        return -9;
-
     *out_dev_plug = s->slot[cur_slot];
     return 0;
 }
@@ -181,7 +169,7 @@ extern "C" int glint_plug_streamer_acquire(
 extern "C" int glint_plug_streamer_release(GlintPlugStreamer *s, int layer) {
     if (!s || layer < 0 || layer >= s->n_layers)
         return -1;
-    if (cudaEventRecord(s->cmp_e[layer], s->compute_stream) != cudaSuccess)
+    if (cudaEventRecord(s->slot_free[layer & 1], s->compute_stream) != cudaSuccess)
         return -2;
     return 0;
 }
@@ -210,5 +198,4 @@ extern "C" void glint_plug_streamer_reset_stats(GlintPlugStreamer *s) {
     s->stats.total_h2d_bytes = 0;
     s->stats.total_stall_ms = 0.0;
     memset(s->stats.per_layer_stall_ms, 0, sizeof(s->stats.per_layer_stall_ms));
-    s->has_started = 0;
 }

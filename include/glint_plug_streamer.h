@@ -33,14 +33,16 @@ int glint_plug_streamer_set_host_data(GlintPlugStreamer *s, int layer, const voi
 int glint_plug_streamer_start(GlintPlugStreamer *s);
 
 /* Acquire device slot for layer l on compute_stream:
- * - If l + 1 < n_layers: issues async copy for layer l + 1 into slot (l + 1) & 1.
+ * - If l + 1 < n_layers: issues async copy for layer l + 1 into slot (l + 1) & 1,
+ *   after the last released reader of that slot.
  * - On compute_stream: waits for layer l H2D copy to complete.
  * - Returns pointer to device plug buffer for layer l.
  */
 int glint_plug_streamer_acquire(GlintPlugStreamer *s, int layer, const uint8_t **out_dev_plug);
 
-/* Release layer l after compute finishes layer l.
- * Records compute end event so the copy stream knows when the slot can be reused.
+/* Release layer l once every read of its slot is enqueued on compute_stream.
+ * Every copy into slot l & 1, in this pass or the next, waits for that point,
+ * so release(l) must come before acquire(l + 1).
  */
 int glint_plug_streamer_release(GlintPlugStreamer *s, int layer);
 
