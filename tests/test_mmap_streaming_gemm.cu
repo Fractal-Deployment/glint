@@ -18,7 +18,6 @@
 #include <string.h>
 #include <assert.h>
 
-
 int main(int argc, char **argv) {
     printf("======================================================================\n");
     printf("=== GLINT ACTIVE WEIGHT STREAMING & MEMORY-MAPPED KERNEL INTEGRATION ===\n");
