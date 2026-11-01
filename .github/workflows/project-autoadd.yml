@@ -12,14 +12,14 @@ jobs:
       issues: read
       pull-requests: read
     steps:
-      - name: Add to Personal Project 4 (Jadon-Fox)
+      - name: Add to GLINT Project 6 (Jadon-Fox)
         uses: actions/add-to-project@v1.0.2
         with:
-          project-url: https://github.com/users/Jadon-Fox/projects/4
+          project-url: https://github.com/users/Jadon-Fox/projects/6
           github-token: ${{ secrets.PROJECT_TOKEN }}
         continue-on-error: true
 
-      - name: Add to Org Project 4 (Fractal-Deployment)
+      - name: Add to Org Project (Fractal-Deployment)
         uses: actions/add-to-project@v1.0.2
         with:
           project-url: https://github.com/orgs/Fractal-Deployment/projects/4
