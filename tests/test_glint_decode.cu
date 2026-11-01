@@ -2,8 +2,8 @@
 #include <cuda_bf16.h>
 #include <stdio.h>
 #include <stdint.h>
-#include "../core/cells.h"
-#include "../core/glint_htile.cu"
+#include "glint_cells.h"
+#include "../cuda/glint_htile.cu"
 
 int main() {
     int M = 1, N = 5120, K = 3072, B = 64;
