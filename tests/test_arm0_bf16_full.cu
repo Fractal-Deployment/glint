@@ -15,7 +15,7 @@
 #include <cuda_bf16.h>
 #include <cublas_v2.h>
 
-#include "../core/safetensors_c.h"
+#include "../include/safetensors_c.h"
 
 #define N_LAYERS 32
 #define HIDDEN_DIM 3072
@@ -307,19 +307,43 @@ __global__ void compute_ce_and_argmax_kernel(
     }
 }
 
+static const int DUMP_POS[] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    16, 80, 144, 208, 272, 336, 400, 464, 528, 592, 656, 720, 784, 848, 912, 976,
+    1040, 1104, 1168, 1232, 1296, 1360, 1424, 1488, 1552, 1616, 1680, 1744, 1808, 1872, 1936, 2000,
+    2047};
+#define N_DUMP ((int)(sizeof(DUMP_POS) / sizeof(DUMP_POS[0])))
+static float g_dump[N_LAYERS + 1][N_DUMP][HIDDEN_DIM];
+
+static void dump_rows(int slot, const float* d_src) {
+    cudaDeviceSynchronize();
+    for (int i = 0; i < N_DUMP; i++)
+        cudaMemcpy(g_dump[slot][i], d_src + (size_t)DUMP_POS[i] * HIDDEN_DIM, HIDDEN_DIM * sizeof(float), cudaMemcpyDeviceToHost);
+}
+
 static const TensorEntry* find_tensor(const SafeTensors *st1, const SafeTensors *st2, const char *name) {
     const TensorEntry *e = safetensors_find(st1, name);
     if (!e) e = safetensors_find(st2, name);
     return e;
 }
 
-int main(void) {
+int main(int argc, char** argv) {
+    if (argc < 3) {
+        printf("usage: %s <model_snapshot_dir> <artifacts_dir> [dump_dir]\n", argv[0]);
+        return 2;
+    }
+    const char* model_dir = argv[1];
+    const char* artifacts_dir = argv[2];
+    const char* dump_dir = argc > 3 ? argv[3] : NULL;
+    char path[1024];
+
     printf("=========================================================\n");
     printf("Arm (0) Full 32-Layer BF16 Evaluator (2048 Tokens)\n");
     printf("=========================================================\n");
 
     // 1. Read token IDs
-    FILE* ft = fopen("/home/workspace/p7-scratch/artifacts/eval_tokens_2048.txt", "r");
+    snprintf(path, sizeof(path), "%s/eval_tokens_2048.txt", artifacts_dir);
+    FILE* ft = fopen(path, "r");
     if (!ft) { printf("Cannot open eval_tokens_2048.txt\n"); return 1; }
     int32_t tokens[2048];
     for (int i = 0; i < 2048; i++) {
@@ -329,7 +353,8 @@ int main(void) {
     printf("Read 2048 tokens successfully.\n");
 
     // Read oracle reference top-1 predictions
-    FILE* fo = fopen("/home/workspace/p7-scratch/artifacts/oracle_top1_2048.bin", "rb");
+    snprintf(path, sizeof(path), "%s/oracle_top1_2048.bin", artifacts_dir);
+    FILE* fo = fopen(path, "rb");
     if (!fo) { printf("Cannot open oracle_top1_2048.bin\n"); return 1; }
     uint32_t oracle_top1[2047];
     if (fread(oracle_top1, sizeof(uint32_t), 2047, fo) != 2047) {
@@ -340,8 +365,9 @@ int main(void) {
 
     // 2. Open safetensors shards
     SafeTensors st1, st2;
-    const char* p1 = "/opt/models/.hf_cache/hub/models--microsoft--Phi-4-mini-instruct/snapshots/cfbefacb99257ffa30c83adab238a50856ac3083/model-00001-of-00002.safetensors";
-    const char* p2 = "/opt/models/.hf_cache/hub/models--microsoft--Phi-4-mini-instruct/snapshots/cfbefacb99257ffa30c83adab238a50856ac3083/model-00002-of-00002.safetensors";
+    char p1[1024], p2[1024];
+    snprintf(p1, sizeof(p1), "%s/model-00001-of-00002.safetensors", model_dir);
+    snprintf(p2, sizeof(p2), "%s/model-00002-of-00002.safetensors", model_dir);
     if (safetensors_open(&st1, p1) != 0 || safetensors_open(&st2, p2) != 0) {
         printf("Cannot open safetensors shards\n"); return 1;
     }
@@ -447,6 +473,7 @@ int main(void) {
 
     cudaMemcpy(d_x, h_x, 2048 * HIDDEN_DIM * sizeof(float), cudaMemcpyHostToDevice);
 
+    if (dump_dir) dump_rows(0, d_x);
     for (int l = 0; l < N_LAYERS; l++) {
         // 1. Input RMSNorm
         rms_norm_kernel<<<2048, 128>>>(d_x, layers[l].d_input_norm, d_h, d_h_bf16, 2048, HIDDEN_DIM, RMS_EPS);
@@ -499,19 +526,14 @@ int main(void) {
 
         // 11. Residual add 2
         residual_add_kernel<<<(2048 * HIDDEN_DIM + 255) / 256, 256>>>(d_x, d_down, 2048 * HIDDEN_DIM);
+        if (dump_dir && l < N_LAYERS - 1) dump_rows(l + 1, d_x);
     }
 
     // Final RMSNorm
     rms_norm_kernel<<<2048, 128>>>(d_x, d_final_norm, d_h, d_x_final_bf16, 2048, HIDDEN_DIM, RMS_EPS);
     cudaDeviceSynchronize();
 
-    // Dump first 10 tokens of final hidden state
-    {
-        __nv_bfloat16 h_dump[10 * HIDDEN_DIM];
-        cudaMemcpy(h_dump, d_x_final_bf16, 10 * HIDDEN_DIM * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
-        FILE* fp = fopen("/home/workspace/p7-scratch/artifacts/cuda_final_h_first10.bin", "wb");
-        if (fp) { fwrite(h_dump, sizeof(__nv_bfloat16), 10 * HIDDEN_DIM, fp); fclose(fp); }
-    }
+    if (dump_dir) dump_rows(N_LAYERS, d_h);
 
     // Chunked LM Head GEMM and loss calculation
     int chunk_size = 256;
@@ -536,6 +558,20 @@ int main(void) {
     int32_t h_top1[2047];
     cudaMemcpy(h_losses, d_losses, 2047 * sizeof(float), cudaMemcpyDeviceToHost);
     cudaMemcpy(h_top1, d_top1, 2047 * sizeof(int32_t), cudaMemcpyDeviceToHost);
+
+    if (dump_dir) {
+        snprintf(path, sizeof(path), "%s/cuda_hidden.bin", dump_dir);
+        FILE* fh = fopen(path, "wb");
+        if (!fh) { printf("Cannot write %s\n", path); return 1; }
+        fwrite(g_dump, sizeof(g_dump), 1, fh);
+        fclose(fh);
+        snprintf(path, sizeof(path), "%s/cuda_pos.bin", dump_dir);
+        FILE* fp = fopen(path, "wb");
+        if (!fp) { printf("Cannot write %s\n", path); return 1; }
+        fwrite(h_losses, sizeof(float), 2047, fp);
+        fwrite(h_top1, sizeof(int32_t), 2047, fp);
+        fclose(fp);
+    }
 
     double total_ce = 0.0;
     int top1_matches = 0;
@@ -567,15 +603,12 @@ int main(void) {
     printf("Top-1 Matches:          %d / 2047\n", top1_matches);
     printf("Top-1 Agreement:        %.2f %%\n", top1_acc);
 
-    if (top1_acc >= 99.0 && ppl_delta_pct <= 1.0) {
-        printf("VERDICT: PASS (Gate 1 Anchor Verified)\n");
-    } else {
-        printf("VERDICT: FAIL (Gate 1 Anchor Mismatch)\n");
-    }
+    int pass = top1_acc >= 99.0 && ppl_delta_pct <= 1.0;
+    printf(pass ? "VERDICT: PASS (Gate 1 Anchor Verified)\n" : "VERDICT: FAIL (Gate 1 Anchor Mismatch)\n");
 
     safetensors_close(&st1);
     safetensors_close(&st2);
     cublasDestroy(cublas);
     free(h_x);
-    return 0;
+    return pass ? 0 : 1;
 }

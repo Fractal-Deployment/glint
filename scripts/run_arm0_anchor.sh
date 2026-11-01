@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Builds and runs the Arm 0 BF16 anchor gate (GATE_RULES.md section 5.C.1) inside 40-Runtime-Deps
+# under the shared GPU lease. Exit status is the gate verdict.
+# Usage: scripts/run_arm0_anchor.sh [dump_dir]
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CONTAINER="${P7_CONTAINER:-40-Runtime-Deps}"
+MODEL_DIR="${P7_BF16_MODEL_DIR:-/opt/models/.hf_cache/hub/models--microsoft--Phi-4-mini-instruct/snapshots/cfbefacb99257ffa30c83adab238a50856ac3083}"
+BUILD_DIR="${P7_BUILD_DIR:-/mnt/spill/compile_scratch/p7-bf16-anchor}"
+LEASE="${GPU_LEASE:-/home/workspace/fractal-deployment/training_orchestrator/scripts/with_gpu_flock.sh}"
+
+lxc exec "$CONTAINER" -- bash -c "mkdir -p '$BUILD_DIR' && /usr/bin/nvcc -O2 -arch=sm_86 \
+  -o '$BUILD_DIR/test_arm0_bf16_full' '$ROOT/tests/test_arm0_bf16_full.cu' -lcublas"
+bash "$LEASE" -- lxc exec "$CONTAINER" -- "$BUILD_DIR/test_arm0_bf16_full" \
+  "$MODEL_DIR" "$ROOT/docs/p7_mode3_fold/artifacts" "$@"
