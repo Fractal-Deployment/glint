@@ -1,6 +1,6 @@
 """HuggingFace BF16 reference dump for the Arm 0 anchor (offline oracle only).
 
-Usage: python p7_hf_reference_dump.py TOKENS_TXT OUT_DIR [MODEL_DIR]
+Usage: python p7_hf_reference_dump.py TOKENS_TXT OUT_DIR [MODEL_DIR] [ATTN_IMPL]
 
 Writes to OUT_DIR:
   hf_pos_stats.bin   float32 [2047, 4]: loss, top1 id, top1 logit, top2 logit
@@ -21,10 +21,11 @@ POSITIONS = list(range(16)) + list(range(16, 2048, 64)) + [2047]
 
 tokens_path, out_dir = sys.argv[1], sys.argv[2]
 model_dir = sys.argv[3] if len(sys.argv) > 3 else MODEL_DIR
+attn_impl = sys.argv[4] if len(sys.argv) > 4 else "sdpa"
 tokens = [int(t) for t in open(tokens_path).read().split()]
 assert len(tokens) == 2048, len(tokens)
 
-model = Phi3ForCausalLM.from_pretrained(model_dir, torch_dtype=torch.bfloat16, device_map="cuda")
+model = Phi3ForCausalLM.from_pretrained(model_dir, dtype=torch.bfloat16, device_map="cuda", attn_implementation=attn_impl)
 model.eval()
 ids = torch.tensor([tokens], device="cuda")
 with torch.no_grad():

@@ -37,6 +37,7 @@
 #define VOCAB_SIZE 200064
 #define BLOCKSIZE 64
 #define RMS_EPS 1e-5f
+#define ATTENTION_SCALING 1.1902380714238083f
 
 /* NVML prototypes for dynamic loading */
 typedef void* nvmlDevice_t;
@@ -225,14 +226,14 @@ __global__ void split_qkv_rope_kernel(
             float angle = (float)pos * inv_freq;
             float d0 = qkv_row[in_base + d];
             float d1 = qkv_row[in_base + d + (ROTARY_DIM / 2)];
-            val = d0 * cosf(angle) - d1 * sinf(angle);
+            val = d0 * (cosf(angle) * ATTENTION_SCALING) - d1 * (sinf(angle) * ATTENTION_SCALING);
         } else if (d < ROTARY_DIM) {
             int p = d - (ROTARY_DIM / 2);
             float inv_freq = powf(10000.0f, -((float)p) / ((float)(ROTARY_DIM / 2)));
             float angle = (float)pos * inv_freq;
             float d0 = qkv_row[in_base + p];
             float d1 = qkv_row[in_base + d];
-            val = d1 * cosf(angle) + d0 * sinf(angle);
+            val = d1 * (cosf(angle) * ATTENTION_SCALING) + d0 * (sinf(angle) * ATTENTION_SCALING);
         } else {
             val = qkv_row[in_base + d];
         }
@@ -246,14 +247,14 @@ __global__ void split_qkv_rope_kernel(
             float angle = (float)pos * inv_freq;
             float d0 = qkv_row[in_base + d];
             float d1 = qkv_row[in_base + d + (ROTARY_DIM / 2)];
-            val = d0 * cosf(angle) - d1 * sinf(angle);
+            val = d0 * (cosf(angle) * ATTENTION_SCALING) - d1 * (sinf(angle) * ATTENTION_SCALING);
         } else if (d < ROTARY_DIM) {
             int p = d - (ROTARY_DIM / 2);
             float inv_freq = powf(10000.0f, -((float)p) / ((float)(ROTARY_DIM / 2)));
             float angle = (float)pos * inv_freq;
             float d0 = qkv_row[in_base + p];
             float d1 = qkv_row[in_base + d];
-            val = d1 * cosf(angle) + d0 * sinf(angle);
+            val = d1 * (cosf(angle) * ATTENTION_SCALING) + d0 * (sinf(angle) * ATTENTION_SCALING);
         } else {
             val = qkv_row[in_base + d];
         }

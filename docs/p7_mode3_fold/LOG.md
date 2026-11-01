@@ -110,3 +110,15 @@ Per Jadon's direction (Oct 21, 3:21 AM) and `/home/workspace/forward-pathing/pro
 - **Verification:**
   - Executed under `with_gpu_flock.sh` inside `40-Runtime-Deps`.
   - Benchmark ran 5 repeats across 32 layers at 11.28 GB/s transfer bandwidth. Exit code 0, printed `MOJO_PREFETCH_PASS`.
+
+---
+
+### Event 5: Arm 0 BF16 Anchor Against the HF Oracle (2026-11-01)
+- **Failure:** `tests/test_arm0_bf16_full.cu` had never been run against the section 5.C.1 gate (it read from the retired `p7-scratch` tree and always exited 0). Run from this repo on the 2048 tokens: perplexity 5.472892 vs HF 5.486957 (0.2563 %), top-1 2011 / 2047 = 98.24 %. FAIL on top-1.
+- **Bisection:** `scripts/p7_hf_reference_dump.py` and the test's `--dump` write hidden states at 49 positions for the embedding, every layer and the final norm; `scripts/p7_compare_anchor_dumps.py` diffs them. No layer diverges: minimum cosine to HF stays at or above 0.9979 through all 33 slots, and every top-1 miss sits where HF's own top-1 and top-2 logits are within 0.5 (18 of 36 exact bf16 ties). The residual gap was rounding: the CUDA path kept fp32 between ops where HF rounds to bf16.
+- **Noise floor:** HF BF16 with eager attention against HF BF16 with sdpa (the oracle) on the same tokens: perplexity 5.481034, top-1 2020 / 2047 = 98.68 %, per-layer relative error about 1.3 %. Two correct bf16 implementations do not reach 99 % top-1 against each other on this text.
+- **Fix:** Arm 0 now rounds to bf16 where HF does (norm output before and after the weight multiply, every GEMM output, RoPE cos/sin and products, attention probabilities before PV, SwiGLU, residual inputs, logits). `cuda/p7_fold_eval.cu` RoPE was missing the longrope attention factor 1.1902 on cos/sin; removing that factor from the Arm 0 path costs perplexity 6.015589 and top-1 86.71 %.
+- **Verification:**
+  - Arm 0: perplexity 5.491616 (0.0849 % from HF), top-1 2015 / 2047 = 98.44 %. Perplexity gate PASS; top-1 gate (99.0 %) FAIL, below the 98.68 % HF-vs-HF floor. On positions where HF's top-1 margin exceeds 0.5 (1746 of 2047) Arm 0 and HF-eager both agree with the oracle 100 %.
+  - INT8 pin (`Phi-4-mini-int8-from-bf16`, dequantized to bf16, same forward): perplexity 5.501980 (0.2738 % from HF), top-1 2003 / 2047 = 97.85 %. Report only.
+  - `cuda/p7_fold_eval.cu` was not rerun: it includes `cells.h` and `p7_plug_streamer.h`, which are not in this repo, and its nested pin lived in the retired `p7-scratch` tree.

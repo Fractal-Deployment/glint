@@ -2,7 +2,7 @@
 
 **Timestamp:** 2026-10-21T03:31:00-04:00  
 **Author:** Antigravity (Gemini Pair Programmer) on Ms-2080  
-**Model Under Test:** Phi-4-mini (32 layers, hidden_size 3072, intermediate_size 8192, 14 query heads, 14 key/value heads)  
+**Model Under Test:** Phi-4-mini (32 layers, hidden_size 3072, intermediate_size 8192, 24 query heads, 8 key/value heads, head_dim 128, partial rotary 0.75 with longrope, vocab 200064, tied embeddings)  
 **Host & Hardware:** Ms-2080, NVIDIA GeForce RTX 3060 (sm_86, 12288 MiB VRAM)  
 **Required Driver:** 595.99.02 (mismatch stops the run immediately)  
 **GPU Lease:** Required via `with_gpu_flock.sh`  

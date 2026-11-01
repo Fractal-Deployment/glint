@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 #include <math.h>
 #include <time.h>
 #include <cuda_runtime.h>
@@ -28,16 +29,13 @@
 #define RMS_EPS 1e-5f
 #define ROPE_THETA 10000.0f
 #define ATTENTION_SCALING 1.1902380714238083f
+#define INT8_BLOCK 64
+
+__device__ __forceinline__ float bf16r(float x) {
+    return __bfloat162float(__float2bfloat16(x));
+}
 
 struct LayerWeightsBF16 {
-    const __nv_bfloat16 *input_norm;
-    const __nv_bfloat16 *post_norm;
-    const __nv_bfloat16 *qkv_w;      // [5120, 3072]
-    const __nv_bfloat16 *o_w;        // [3072, 3072]
-    const __nv_bfloat16 *gate_up_w;  // [16384, 3072]
-    const __nv_bfloat16 *down_w;     // [3072, 8192]
-
-    // Device pointers
     __nv_bfloat16 *d_input_norm;
     __nv_bfloat16 *d_post_norm;
     __nv_bfloat16 *d_qkv_w;
@@ -84,7 +82,7 @@ __global__ void rms_norm_kernel(
     float rscale = rsqrtf(s_mean_sq + eps);
     for (int i = threadIdx.x; i < dim; i += blockDim.x) {
         float w = __bfloat162float(weight[i]);
-        float val = in_row[i] * rscale * w;
+        float val = bf16r(bf16r(in_row[i] * rscale) * w);
         out_row[i] = val;
         if (out_bf16_row) out_bf16_row[i] = __float2bfloat16(val);
     }
@@ -111,23 +109,23 @@ __global__ void phi3_rope_kernel(
     int i = d % (ROTARY_DIM / 2);
     float inv_freq = 1.0f / powf(ROPE_THETA, (2.0f * (float)i) / (float)ROTARY_DIM);
     float angle = (float)pos * inv_freq;
-    float cos_v = cosf(angle) * ATTENTION_SCALING;
-    float sin_v = sinf(angle) * ATTENTION_SCALING;
+    float cos_v = bf16r(cosf(angle) * ATTENTION_SCALING);
+    float sin_v = bf16r(sinf(angle) * ATTENTION_SCALING);
 
     if (head < NUM_Q_HEADS) {
         int h = head;
         int in_base = h * HEAD_DIM;
         float val;
         if (d < ROTARY_DIM / 2) {
-            float x0 = qkv_row[in_base + d];
-            float x1 = qkv_row[in_base + d + ROTARY_DIM / 2];
-            val = x0 * cos_v - x1 * sin_v;
+            float x0 = bf16r(qkv_row[in_base + d]);
+            float x1 = bf16r(qkv_row[in_base + d + ROTARY_DIM / 2]);
+            val = bf16r(bf16r(x0 * cos_v) - bf16r(x1 * sin_v));
         } else if (d < ROTARY_DIM) {
-            float x0 = qkv_row[in_base + d - ROTARY_DIM / 2];
-            float x1 = qkv_row[in_base + d];
-            val = x1 * cos_v + x0 * sin_v;
+            float x0 = bf16r(qkv_row[in_base + d - ROTARY_DIM / 2]);
+            float x1 = bf16r(qkv_row[in_base + d]);
+            val = bf16r(bf16r(x1 * cos_v) + bf16r(x0 * sin_v));
         } else {
-            val = qkv_row[in_base + d];
+            val = bf16r(qkv_row[in_base + d]);
         }
         q[(size_t)m * NUM_Q_HEADS * HEAD_DIM + h * HEAD_DIM + d] = val;
     } else if (head < NUM_Q_HEADS + NUM_KV_HEADS) {
@@ -135,21 +133,21 @@ __global__ void phi3_rope_kernel(
         int in_base = NUM_Q_HEADS * HEAD_DIM + h * HEAD_DIM;
         float val;
         if (d < ROTARY_DIM / 2) {
-            float x0 = qkv_row[in_base + d];
-            float x1 = qkv_row[in_base + d + ROTARY_DIM / 2];
-            val = x0 * cos_v - x1 * sin_v;
+            float x0 = bf16r(qkv_row[in_base + d]);
+            float x1 = bf16r(qkv_row[in_base + d + ROTARY_DIM / 2]);
+            val = bf16r(bf16r(x0 * cos_v) - bf16r(x1 * sin_v));
         } else if (d < ROTARY_DIM) {
-            float x0 = qkv_row[in_base + d - ROTARY_DIM / 2];
-            float x1 = qkv_row[in_base + d];
-            val = x1 * cos_v + x0 * sin_v;
+            float x0 = bf16r(qkv_row[in_base + d - ROTARY_DIM / 2]);
+            float x1 = bf16r(qkv_row[in_base + d]);
+            val = bf16r(bf16r(x1 * cos_v) + bf16r(x0 * sin_v));
         } else {
-            val = qkv_row[in_base + d];
+            val = bf16r(qkv_row[in_base + d]);
         }
         k[(size_t)m * NUM_KV_HEADS * HEAD_DIM + h * HEAD_DIM + d] = val;
     } else {
         int h = head - (NUM_Q_HEADS + NUM_KV_HEADS);
         int in_base = (NUM_Q_HEADS + NUM_KV_HEADS) * HEAD_DIM + h * HEAD_DIM;
-        v[(size_t)m * NUM_KV_HEADS * HEAD_DIM + h * HEAD_DIM + d] = qkv_row[in_base + d];
+        v[(size_t)m * NUM_KV_HEADS * HEAD_DIM + h * HEAD_DIM + d] = bf16r(qkv_row[in_base + d]);
     }
 }
 
@@ -203,7 +201,7 @@ __global__ void causal_gqa_online_attention_kernel(
 
         const float* v_row = v + ((size_t)tk * NUM_KV_HEADS + hkv) * HEAD_DIM;
         float v_val = v_row[d];
-        acc = acc * alpha + beta * v_val;
+        acc = acc * alpha + bf16r(beta) * v_val;
         __syncthreads();
     }
 
@@ -221,10 +219,10 @@ __global__ void swiglu_kernel(const float* __restrict__ gate_up, float* __restri
     int i = idx % INTERMEDIATE_DIM;
 
     const float* row = gate_up + (size_t)m * (2 * INTERMEDIATE_DIM);
-    float g = row[i];
-    float u = row[INTERMEDIATE_DIM + i];
-    float silu_g = g / (1.0f + expf(-g));
-    float val = silu_g * u;
+    float g = bf16r(row[i]);
+    float u = bf16r(row[INTERMEDIATE_DIM + i]);
+    float silu_g = bf16r(g / (1.0f + expf(-g)));
+    float val = bf16r(silu_g * u);
     out[(size_t)m * INTERMEDIATE_DIM + i] = val;
     if (out_bf16) out_bf16[(size_t)m * INTERMEDIATE_DIM + i] = __float2bfloat16(val);
 }
@@ -232,8 +230,7 @@ __global__ void swiglu_kernel(const float* __restrict__ gate_up, float* __restri
 __global__ void residual_add_kernel(float* __restrict__ x, const float* __restrict__ res, int numel) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < numel) {
-        float sum = x[i] + res[i];
-        x[i] = __bfloat162float(__float2bfloat16(sum));
+        x[i] = bf16r(x[i] + bf16r(res[i]));
     }
 }
 
@@ -253,8 +250,7 @@ __global__ void compute_ce_and_argmax_kernel(
     float max_val = -1e30f;
     int max_idx = 200064;
     for (int v = threadIdx.x; v < vocab_size; v += blockDim.x) {
-        // Cast to bfloat16 float to match HuggingFace's bfloat16 logits representation
-        float val = __bfloat162float(__float2bfloat16(l_row[v]));
+        float val = bf16r(l_row[v]);
         if (val > max_val || (val == max_val && v < max_idx)) {
             max_val = val;
             max_idx = v;
@@ -286,7 +282,7 @@ __global__ void compute_ce_and_argmax_kernel(
 
     float sum_exp = 0.0f;
     for (int v = threadIdx.x; v < vocab_size; v += blockDim.x) {
-        sum_exp += expf(l_row[v] - block_max);
+        sum_exp += expf(bf16r(l_row[v]) - block_max);
     }
 
     __shared__ float s_sum[256];
@@ -301,7 +297,7 @@ __global__ void compute_ce_and_argmax_kernel(
     }
 
     if (threadIdx.x == 0) {
-        float target_l = (target >= 0 && target < vocab_size) ? l_row[target] : 0.0f;
+        float target_l = (target >= 0 && target < vocab_size) ? bf16r(l_row[target]) : 0.0f;
         float log_sum_exp = block_max + logf(fmaxf(s_sum[0], 1e-20f));
         losses[row] = log_sum_exp - target_l;
     }
@@ -327,14 +323,56 @@ static const TensorEntry* find_tensor(const SafeTensors *st1, const SafeTensors 
     return e;
 }
 
+__global__ void int8_block_dequant_kernel(const int8_t* __restrict__ q, const float* __restrict__ scale,
+                                          __nv_bfloat16* __restrict__ out, size_t numel) {
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < numel) out[i] = __float2bfloat16((float)q[i] * scale[i / INT8_BLOCK]);
+}
+
+static __nv_bfloat16* upload_linear(const SafeTensors *st1, const SafeTensors *st2, const SafeTensors *int8_pin,
+                                    const char *name, size_t numel) {
+    __nv_bfloat16 *d_w;
+    cudaMalloc(&d_w, numel * sizeof(__nv_bfloat16));
+    if (!int8_pin) {
+        cudaMemcpy(d_w, find_tensor(st1, st2, name)->data, numel * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
+        return d_w;
+    }
+    char scale_name[300];
+    snprintf(scale_name, sizeof(scale_name), "%s.int8_scale", name);
+    const TensorEntry *eq = safetensors_find(int8_pin, name);
+    const TensorEntry *es = safetensors_find(int8_pin, scale_name);
+    if (!eq || !es || eq->end - eq->begin != numel || es->end - es->begin != numel / INT8_BLOCK * sizeof(float)) {
+        printf("INT8 pin tensor %s missing or misshapen\n", name);
+        exit(1);
+    }
+    int8_t *d_q;
+    float *d_s;
+    cudaMalloc(&d_q, numel);
+    cudaMalloc(&d_s, numel / INT8_BLOCK * sizeof(float));
+    cudaMemcpy(d_q, eq->data, numel, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_s, es->data, numel / INT8_BLOCK * sizeof(float), cudaMemcpyHostToDevice);
+    int8_block_dequant_kernel<<<(unsigned)((numel + 255) / 256), 256>>>(d_q, d_s, d_w, numel);
+    cudaDeviceSynchronize();
+    cudaFree(d_q);
+    cudaFree(d_s);
+    return d_w;
+}
+
 int main(int argc, char** argv) {
-    if (argc < 3) {
-        printf("usage: %s <model_snapshot_dir> <artifacts_dir> [dump_dir]\n", argv[0]);
+    const char* dump_dir = NULL;
+    const char* int8_pin_path = NULL;
+    int argi = 1;
+    for (; argi + 1 < argc && argv[argi][0] == '-'; argi += 2) {
+        if (strcmp(argv[argi], "--dump") == 0) dump_dir = argv[argi + 1];
+        else if (strcmp(argv[argi], "--int8") == 0) int8_pin_path = argv[argi + 1];
+        else break;
+    }
+    if (argc - argi != 2) {
+        printf("usage: %s [--dump DIR] [--int8 PIN.safetensors] <model_snapshot_dir> <artifacts_dir>\n", argv[0]);
         return 2;
     }
-    const char* model_dir = argv[1];
-    const char* artifacts_dir = argv[2];
-    const char* dump_dir = argc > 3 ? argv[3] : NULL;
+    const char* model_dir = argv[argi];
+    const char* artifacts_dir = argv[argi + 1];
     char path[1024];
 
     printf("=========================================================\n");
@@ -393,43 +431,34 @@ int main(int argc, char** argv) {
         }
     }
 
+    SafeTensors st_int8;
+    const SafeTensors* int8_pin = NULL;
+    if (int8_pin_path) {
+        if (safetensors_open(&st_int8, int8_pin_path) != 0) { printf("Cannot open INT8 pin %s\n", int8_pin_path); return 1; }
+        int8_pin = &st_int8;
+    }
+
     LayerWeightsBF16 layers[N_LAYERS];
     for (int l = 0; l < N_LAYERS; l++) {
         char name[256];
         snprintf(name, sizeof(name), "model.layers.%d.input_layernorm.weight", l);
-        layers[l].input_norm = (const __nv_bfloat16*)find_tensor(&st1, &st2, name)->data;
+        cudaMalloc(&layers[l].d_input_norm, HIDDEN_DIM * sizeof(__nv_bfloat16));
+        cudaMemcpy(layers[l].d_input_norm, find_tensor(&st1, &st2, name)->data, HIDDEN_DIM * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
 
         snprintf(name, sizeof(name), "model.layers.%d.post_attention_layernorm.weight", l);
-        layers[l].post_norm = (const __nv_bfloat16*)find_tensor(&st1, &st2, name)->data;
+        cudaMalloc(&layers[l].d_post_norm, HIDDEN_DIM * sizeof(__nv_bfloat16));
+        cudaMemcpy(layers[l].d_post_norm, find_tensor(&st1, &st2, name)->data, HIDDEN_DIM * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
 
         snprintf(name, sizeof(name), "model.layers.%d.self_attn.qkv_proj.weight", l);
-        layers[l].qkv_w = (const __nv_bfloat16*)find_tensor(&st1, &st2, name)->data;
-
+        layers[l].d_qkv_w = upload_linear(&st1, &st2, int8_pin, name, (size_t)5120 * HIDDEN_DIM);
         snprintf(name, sizeof(name), "model.layers.%d.self_attn.o_proj.weight", l);
-        layers[l].o_w = (const __nv_bfloat16*)find_tensor(&st1, &st2, name)->data;
-
+        layers[l].d_o_w = upload_linear(&st1, &st2, int8_pin, name, (size_t)HIDDEN_DIM * HIDDEN_DIM);
         snprintf(name, sizeof(name), "model.layers.%d.mlp.gate_up_proj.weight", l);
-        layers[l].gate_up_w = (const __nv_bfloat16*)find_tensor(&st1, &st2, name)->data;
-
+        layers[l].d_gate_up_w = upload_linear(&st1, &st2, int8_pin, name, (size_t)2 * INTERMEDIATE_DIM * HIDDEN_DIM);
         snprintf(name, sizeof(name), "model.layers.%d.mlp.down_proj.weight", l);
-        layers[l].down_w = (const __nv_bfloat16*)find_tensor(&st1, &st2, name)->data;
-
-        // Allocate device weights
-        cudaMalloc(&layers[l].d_input_norm, HIDDEN_DIM * sizeof(__nv_bfloat16));
-        cudaMalloc(&layers[l].d_post_norm, HIDDEN_DIM * sizeof(__nv_bfloat16));
-        cudaMalloc(&layers[l].d_qkv_w, 5120 * HIDDEN_DIM * sizeof(__nv_bfloat16));
-        cudaMalloc(&layers[l].d_o_w, HIDDEN_DIM * HIDDEN_DIM * sizeof(__nv_bfloat16));
-        cudaMalloc(&layers[l].d_gate_up_w, 2 * INTERMEDIATE_DIM * HIDDEN_DIM * sizeof(__nv_bfloat16));
-        cudaMalloc(&layers[l].d_down_w, HIDDEN_DIM * INTERMEDIATE_DIM * sizeof(__nv_bfloat16));
-
-        cudaMemcpy(layers[l].d_input_norm, layers[l].input_norm, HIDDEN_DIM * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
-        cudaMemcpy(layers[l].d_post_norm, layers[l].post_norm, HIDDEN_DIM * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
-        cudaMemcpy(layers[l].d_qkv_w, layers[l].qkv_w, 5120 * HIDDEN_DIM * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
-        cudaMemcpy(layers[l].d_o_w, layers[l].o_w, HIDDEN_DIM * HIDDEN_DIM * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
-        cudaMemcpy(layers[l].d_gate_up_w, layers[l].gate_up_w, 2 * INTERMEDIATE_DIM * HIDDEN_DIM * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
-        cudaMemcpy(layers[l].d_down_w, layers[l].down_w, HIDDEN_DIM * INTERMEDIATE_DIM * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
+        layers[l].d_down_w = upload_linear(&st1, &st2, int8_pin, name, (size_t)HIDDEN_DIM * INTERMEDIATE_DIM);
     }
-    printf("Uploaded all 32 layers of BF16 weights to VRAM.\n");
+    printf("Uploaded all 32 layers of %s weights to VRAM.\n", int8_pin ? "INT8-dequantized" : "BF16");
 
     // Allocate activations
     float *d_x, *d_h, *d_qkv, *d_q, *d_k, *d_v, *d_attn_out, *d_attn_proj;
@@ -594,7 +623,7 @@ int main(int argc, char** argv) {
     double oracle_ppl = 5.486957;
     double ppl_delta_pct = fabs(ppl - oracle_ppl) / oracle_ppl * 100.0;
 
-    printf("\n=== Arm (0) BF16 Evaluation Results ===\n");
+    printf("\n=== %s Evaluation Results ===\n", int8_pin ? "INT8 pin" : "Arm (0) BF16");
     printf("Forward Pass Time:      %.3f s (%.1f tok/s)\n", total_sec, 2048.0 / total_sec);
     printf("Mean Cross Entropy:     %.6f\n", mean_ce);
     printf("Measured Perplexity:    %.6f\n", ppl);
@@ -604,11 +633,12 @@ int main(int argc, char** argv) {
     printf("Top-1 Agreement:        %.2f %%\n", top1_acc);
 
     int pass = top1_acc >= 99.0 && ppl_delta_pct <= 1.0;
-    printf(pass ? "VERDICT: PASS (Gate 1 Anchor Verified)\n" : "VERDICT: FAIL (Gate 1 Anchor Mismatch)\n");
+    if (int8_pin) printf("VERDICT: REPORT ONLY (INT8 pin %s, no gate)\n", int8_pin_path);
+    else printf(pass ? "VERDICT: PASS (Gate 1 Anchor Verified)\n" : "VERDICT: FAIL (Gate 1 Anchor Mismatch)\n");
 
     safetensors_close(&st1);
     safetensors_close(&st2);
     cublasDestroy(cublas);
     free(h_x);
-    return pass ? 0 : 1;
+    return (pass || int8_pin) ? 0 : 1;
 }
