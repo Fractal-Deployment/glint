@@ -7,6 +7,7 @@
  * 3. Ampere H-TILE quantized GEMM kernel (glint_htile.cu) executing on sm_86.
  */
 
+#include "glint_htile.h"
 #include "glint_plug_streamer.h"
 #include "safetensors_c.h"
 #include <cuda_runtime.h>
@@ -17,10 +18,6 @@
 #include <string.h>
 #include <assert.h>
 
-extern "C" int launch_glint_htile_s3_f32(
-    const uint8_t *d_hole, const uint8_t *d_plug, const float *d_absmax,
-    const __nv_bfloat16 *d_x, float *d_y,
-    int M, int N, int K, int blocksize);
 
 int main(int argc, char **argv) {
     printf("======================================================================\n");
@@ -119,7 +116,7 @@ int main(int argc, char **argv) {
         assert(rc == 0 && dev_plug != NULL);
 
         /* Launch H-TILE S3 Quantized GEMM Kernel */
-        rc = launch_glint_htile_s3_f32(d_hole, dev_plug, d_absmax, d_x, d_y, M, N, K, blocksize);
+        rc = launch_glint_htile_s3_f32_stream(d_hole, dev_plug, d_absmax, d_x, d_y, M, N, K, blocksize, compute_stream);
         assert(rc == 0);
 
         /* Release slot so copy_stream can reuse slot for layer l+2 */

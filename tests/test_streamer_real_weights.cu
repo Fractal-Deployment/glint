@@ -11,6 +11,7 @@
  */
 #include "glint_cells.h"
 #include "glint_encode.h"
+#include "glint_htile.h"
 #include "glint_plug_streamer.h"
 #include "safetensors_c.h"
 #include <cuda_bf16.h>
@@ -21,10 +22,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-extern "C" int launch_glint_htile_s3_f32(
-    const uint8_t *d_hole, const uint8_t *d_plug, const float *d_absmax,
-    const __nv_bfloat16 *d_x, float *d_y,
-    int M, int N, int K, int blocksize);
 
 #define CK(call)                                                                   \
     do {                                                                           \
@@ -186,8 +183,8 @@ int main(int argc, char **argv) {
 
     for (int u = 0; u < n_units; ++u) {
         Unit *x = &units[u];
-        REQUIRE(launch_glint_htile_s3_f32(x->d_hole, x->d_plug, x->d_absmax, x->d_x, x->d_y_resident,
-                                          M, x->N, x->K, kBlocksize) == 0, "resident launch %d", u);
+        REQUIRE(launch_glint_htile_s3_f32_stream(x->d_hole, x->d_plug, x->d_absmax, x->d_x, x->d_y_resident,
+                                          M, x->N, x->K, kBlocksize, compute_stream) == 0, "resident launch %d", u);
     }
     CK(cudaDeviceSynchronize());
 
@@ -208,8 +205,8 @@ int main(int argc, char **argv) {
             Unit *x = &units[u];
             const uint8_t *d_slot = NULL;
             REQUIRE(glint_plug_streamer_acquire(streamer, u, &d_slot) == 0 && d_slot, "acquire %d", u);
-            REQUIRE(launch_glint_htile_s3_f32(x->d_hole, d_slot, x->d_absmax, x->d_x, x->d_y_streamed[p],
-                                              M, x->N, x->K, kBlocksize) == 0, "streamed launch %d", u);
+            REQUIRE(launch_glint_htile_s3_f32_stream(x->d_hole, d_slot, x->d_absmax, x->d_x, x->d_y_streamed[p],
+                                              M, x->N, x->K, kBlocksize, compute_stream) == 0, "streamed launch %d", u);
             REQUIRE(glint_plug_streamer_release(streamer, u) == 0, "release %d", u);
             CK(cudaEventRecord(released[u], compute_stream));
             CK(cudaStreamWaitEvent(copy_stream, released[u], 0));
