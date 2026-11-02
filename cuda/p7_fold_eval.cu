@@ -37,6 +37,9 @@
 #define VOCAB_SIZE 200064
 #define BLOCKSIZE 64
 #define RMS_EPS 1e-5f
+#define ATTENTION_SCALING 1.1902380714238083f
+#define ORIGINAL_MAX_POSITION 4096
+#define DECODE_STEPS 16
 
 /* NVML prototypes for dynamic loading */
 typedef void* nvmlDevice_t;
@@ -225,14 +228,14 @@ __global__ void split_qkv_rope_kernel(
             float angle = (float)pos * inv_freq;
             float d0 = qkv_row[in_base + d];
             float d1 = qkv_row[in_base + d + (ROTARY_DIM / 2)];
-            val = d0 * cosf(angle) - d1 * sinf(angle);
+            val = d0 * (cosf(angle) * ATTENTION_SCALING) - d1 * (sinf(angle) * ATTENTION_SCALING);
         } else if (d < ROTARY_DIM) {
             int p = d - (ROTARY_DIM / 2);
             float inv_freq = powf(10000.0f, -((float)p) / ((float)(ROTARY_DIM / 2)));
             float angle = (float)pos * inv_freq;
             float d0 = qkv_row[in_base + p];
             float d1 = qkv_row[in_base + d];
-            val = d1 * cosf(angle) + d0 * sinf(angle);
+            val = d1 * (cosf(angle) * ATTENTION_SCALING) + d0 * (sinf(angle) * ATTENTION_SCALING);
         } else {
             val = qkv_row[in_base + d];
         }
@@ -246,14 +249,14 @@ __global__ void split_qkv_rope_kernel(
             float angle = (float)pos * inv_freq;
             float d0 = qkv_row[in_base + d];
             float d1 = qkv_row[in_base + d + (ROTARY_DIM / 2)];
-            val = d0 * cosf(angle) - d1 * sinf(angle);
+            val = d0 * (cosf(angle) * ATTENTION_SCALING) - d1 * (sinf(angle) * ATTENTION_SCALING);
         } else if (d < ROTARY_DIM) {
             int p = d - (ROTARY_DIM / 2);
             float inv_freq = powf(10000.0f, -((float)p) / ((float)(ROTARY_DIM / 2)));
             float angle = (float)pos * inv_freq;
             float d0 = qkv_row[in_base + p];
             float d1 = qkv_row[in_base + d];
-            val = d1 * cosf(angle) + d0 * sinf(angle);
+            val = d1 * (cosf(angle) * ATTENTION_SCALING) + d0 * (sinf(angle) * ATTENTION_SCALING);
         } else {
             val = qkv_row[in_base + d];
         }
@@ -496,6 +499,11 @@ int main(int argc, char** argv) {
         fprintf(stderr, "HARD_BLOCK: expected 223 tokens, got %d\n", n_tokens);
         return 4;
     }
+    if (n_tokens + DECODE_STEPS > ORIGINAL_MAX_POSITION) {
+        fprintf(stderr, "HARD_BLOCK: positions up to %d need the longrope long_factor, which RoPE here omits\n",
+                n_tokens + DECODE_STEPS - 1);
+        return 4;
+    }
 
     int32_t *d_tokens, *d_targets;
     cudaMalloc(&d_tokens, n_tokens * sizeof(int32_t));
@@ -728,9 +736,8 @@ int main(int argc, char** argv) {
         double mean_ce = total_loss / (n_tokens - 1);
         metrics[1].ppl = exp(mean_ce);
 
-        /* Decode 16 steps */
         cudaEventRecord(ev0, compute_stream);
-        for (int step = 0; step < 16; step++) {
+        for (int step = 0; step < DECODE_STEPS; step++) {
             embed_lookup_kernel<<<dim3((HIDDEN_DIM + 255) / 256, 1), 256, 0, compute_stream>>>(
                 d_tokens + n_tokens - 1, shared.d_embed_tokens, d_x, NULL, 1, HIDDEN_DIM);
             for (int l = 0; l < N_LAYERS; l++) {
@@ -919,9 +926,8 @@ int main(int argc, char** argv) {
         double mean_ce = total_loss / (n_tokens - 1);
         metrics[2].ppl = exp(mean_ce);
 
-        /* Decode 16 steps */
         cudaEventRecord(ev0, compute_stream);
-        for (int step = 0; step < 16; step++) {
+        for (int step = 0; step < DECODE_STEPS; step++) {
             embed_lookup_kernel<<<dim3((HIDDEN_DIM + 255) / 256, 1), 256, 0, compute_stream>>>(
                 d_tokens + n_tokens - 1, shared.d_embed_tokens, d_x, d_x_bf16, 1, HIDDEN_DIM);
             for (int l = 0; l < N_LAYERS; l++) {
@@ -1060,9 +1066,8 @@ int main(int argc, char** argv) {
             for (int l = 0; l < N_LAYERS; l++) metrics[3].per_layer_stall_ms[l] = s_stats.per_layer_stall_ms[l];
         }
 
-        /* Decode 16 steps with streaming */
         cudaEventRecord(ev0, compute_stream);
-        for (int step = 0; step < 16; step++) {
+        for (int step = 0; step < DECODE_STEPS; step++) {
             p7_plug_streamer_reset_stats(streamer);
             p7_plug_streamer_start(streamer);
             embed_lookup_kernel<<<dim3((HIDDEN_DIM + 255) / 256, 1), 256, 0, compute_stream>>>(
@@ -1196,9 +1201,8 @@ int main(int argc, char** argv) {
             cudaMemcpy(arm4_final_logits, d_logits, (n_tokens - 1) * VOCAB_SIZE * sizeof(float), cudaMemcpyDeviceToHost);
         }
 
-        /* Decode 16 steps */
         cudaEventRecord(ev0, compute_stream);
-        for (int step = 0; step < 16; step++) {
+        for (int step = 0; step < DECODE_STEPS; step++) {
             embed_lookup_kernel<<<dim3((HIDDEN_DIM + 255) / 256, 1), 256, 0, compute_stream>>>(
                 d_tokens + n_tokens - 1, shared.d_embed_tokens, d_x, d_x_bf16, 1, HIDDEN_DIM);
             for (int l = 0; l < N_LAYERS; l++) {
