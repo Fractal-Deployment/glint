@@ -39,7 +39,7 @@ __device__ __forceinline__ void mma_s8(int (&c)[4], uint32_t a0, uint32_t a1, ui
 /* 128 threads = 4 warps; warp w owns output rows [16w, 16w+16) of the 64x64 tile and all 8 n-tiles. */
 __global__ void __launch_bounds__(128)
 k_int8_mma_gemm(const int8_t *xq, const float *sx, const int8_t *wq, const float *sw,
-                float *y, int m, int n, int k_in) {
+                float *y, int m, int n, int k_in, int accumulate) {
     __shared__ __align__(16) int8_t sA[BM][SPAD];
     __shared__ __align__(16) int8_t sB[BN][SPAD];
     __shared__ float sSx[BM];
@@ -102,12 +102,12 @@ k_int8_mma_gemm(const int8_t *xq, const float *sx, const int8_t *wq, const float
         int col = n0 + nt * 8 + t * 2;
         int r0 = m0 + rb + g, r1 = r0 + 8;
         if (r0 < m) {
-            if (col < n) y[(size_t)r0 * n + col] = acc[nt][0];
-            if (col + 1 < n) y[(size_t)r0 * n + col + 1] = acc[nt][1];
+            if (col < n) y[(size_t)r0 * n + col] = (accumulate ? y[(size_t)r0 * n + col] : 0.f) + acc[nt][0];
+            if (col + 1 < n) y[(size_t)r0 * n + col + 1] = (accumulate ? y[(size_t)r0 * n + col + 1] : 0.f) + acc[nt][1];
         }
         if (r1 < m) {
-            if (col < n) y[(size_t)r1 * n + col] = acc[nt][2];
-            if (col + 1 < n) y[(size_t)r1 * n + col + 1] = acc[nt][3];
+            if (col < n) y[(size_t)r1 * n + col] = (accumulate ? y[(size_t)r1 * n + col] : 0.f) + acc[nt][2];
+            if (col + 1 < n) y[(size_t)r1 * n + col + 1] = (accumulate ? y[(size_t)r1 * n + col + 1] : 0.f) + acc[nt][3];
         }
     }
 }
@@ -120,6 +120,31 @@ extern "C" cudaError_t int8_mma_gemm(const __nv_bfloat16 *x, Int8MmaLinear w, fl
     int nkb = w.k_in / BK;
     k_quant_act<<<m * nkb, 64, 0, stream>>>(x, m, w.k_in, xq, sx);
     dim3 grid((w.n_out + BN - 1) / BN, (m + BM - 1) / BM);
-    k_int8_mma_gemm<<<grid, 128, 0, stream>>>(xq, sx, w.q, w.scale, y, m, w.n_out, w.k_in);
+    k_int8_mma_gemm<<<grid, 128, 0, stream>>>(xq, sx, w.q, w.scale, y, m, w.n_out, w.k_in, 0);
+    return cudaGetLastError();
+}
+
+/* Unpack a p7_plug_res4_v1 slice: element 2i in the low nibble, biased +8, to int8 in [-7, 7]. */
+__global__ void k_unpack_res4(const uint8_t *q4, int8_t *out, size_t n) {
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    int nib = (q4[i >> 1] >> ((i & 1) * 4)) & 0xF;
+    out[i] = (int8_t)(nib - 8);
+}
+
+extern "C" cudaError_t int8_mma_gemm_plug(const __nv_bfloat16 *x, Int8MmaLinear w, const uint8_t *plug_q4,
+                                          const float *plug_scale, float *y, int m, int8_t *xq, float *sx,
+                                          int8_t *plug_i8, cudaStream_t stream) {
+    if (!x || !y || !xq || !sx || !w.q || !w.scale || !plug_q4 || !plug_scale || !plug_i8 || m < 1 ||
+        w.n_out < 1 || w.k_in < BK || (w.k_in % BK) != 0)
+        return cudaErrorInvalidValue;
+    int nkb = w.k_in / BK;
+    size_t n = (size_t)w.n_out * w.k_in;
+    k_quant_act<<<m * nkb, 64, 0, stream>>>(x, m, w.k_in, xq, sx);
+    dim3 grid((w.n_out + BN - 1) / BN, (m + BM - 1) / BM);
+    k_int8_mma_gemm<<<grid, 128, 0, stream>>>(xq, sx, w.q, w.scale, y, m, w.n_out, w.k_in, 0);
+    k_unpack_res4<<<(unsigned)((n + 255) / 256), 256, 0, stream>>>(plug_q4, plug_i8, n);
+    /* the plug shares the base's activation quantization; it adds into y */
+    k_int8_mma_gemm<<<grid, 128, 0, stream>>>(xq, sx, plug_i8, plug_scale, y, m, w.n_out, w.k_in, 1);
     return cudaGetLastError();
 }

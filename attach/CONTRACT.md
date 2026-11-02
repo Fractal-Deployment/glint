@@ -10,6 +10,7 @@ The orchestrator attaches glint through `training_orchestrator/scripts/orch_p7_s
 ## Exported symbols (extern "C")
 - `p7_abi_version`, `p7_abi_selftest`
 - `int8_mma_gemm` (W8A8 INT8 tensor-core GEMM over a `bf16_to_int8_pin_v1` linear; `include/int8_mma_gemm.h`)
+- `int8_mma_gemm_plug` (same, plus a p7_plug_res4_v1 slice added by an accumulating second pass; additive, ABI unchanged)
 - `glint_plug_streamer_{create,set_host_data,start,acquire,release,get_stats,destroy}` (2-slot ring; `include/glint_plug_streamer.h`)
 
 ## Self-test (`p7_abi_selftest`)
