@@ -17,3 +17,5 @@ nvcc -O3 -std=c++17 -arch=sm_86 -Iinclude -c cuda/glint_htile.cu -o glint_htile.
 ```
 
 Link `glint_htile.o` with `libglint_encode.so` in a small driver; compare against `glint_htile_sim.htile_gemm_flat` (see `GROK_BUILD_GPU_TEST.md` §3).
+
+**Shape coverage (#8):** `tests/test_glint_htile.cu` also exercises partial K (tile tails), K not divisible by 32, and small unaligned M/N — not only full 16×16×64 tiles. A failing smoke on odd K usually means a tail or packed-row guard in `cuda/glint_htile.cu`, not the smem layout above.
