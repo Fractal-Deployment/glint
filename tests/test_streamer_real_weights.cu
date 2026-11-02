@@ -1,10 +1,10 @@
 /* Real Phi-4-mini BF16 weights -> CUDA GLINT encode -> plugs streamed through
  * the two-slot streamer into H-TILE. Gates: streamed output is bit-identical to
- * the same H-TILE run with plugs resident over six back-to-back passes, and
+ * the same H-TILE run with plugs resident over back-to-back passes, and
  * resident output matches a host decode GEMM within an f32 summation bound.
- * Passes 2-3 overwrite each slot with random bytes once its reader is released.
- * Passes 4-5 spin on compute_stream before each H-TILE launch, so every slot is
- * read long after the copy stream could have refilled it.
+ * Poisoned passes overwrite each released slot with random bytes. That copy
+ * waits on the reader, which also orders every later refill behind it, so only
+ * the delayed passes, which spin before each launch, expose a skipped slot wait.
  * Error against the BF16 GEMM of the original weights is printed, not gated.
  *
  * ./test_streamer_real_weights <model-00001-of-00002.safetensors> [n_layers=2] [M=4]

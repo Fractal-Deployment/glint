@@ -1,7 +1,6 @@
-/* Two-slot streamer on synthetic plugs. For 1, 2, 3 and 32 layers, three
- * back-to-back passes spin on compute_stream before each read, so a refill that
- * skips its slot_free wait lands before the read and the byte check fails.
- * release() must follow the acquire/release order.
+/* Each read spins first, so a refill that skips its slot_free wait lands before
+ * the read. With 1 or 2 layers every refill rewrites a slot's own bytes, so
+ * only 3+ layers can observe a skipped wait.
  */
 #include "../include/glint_plug_streamer.h"
 #include <cuda_runtime.h>
