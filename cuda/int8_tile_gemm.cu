@@ -1,12 +1,3 @@
-/* cuda/int8_tile_gemm.cu: W8A16 GEMM over a bf16_to_int8_pin_v1 linear, one weight tile at a time.
- *
- * The weight stays packed in VRAM as the pin stores it. Each CTA computes a BM x BN tile of Y and
- * walks K in BK steps through a STAGES-deep cp.async ring in shared memory, holding the bf16 X tile,
- * the int8 W tile and the two scales each W row of the tile can touch. The W tile is unfolded to bf16
- * in registers, one mma.sync B fragment at a time, by unfold_pair; a per-tile correction joins there,
- * before the single bf16 rounding.
- */
-
 #include "../include/int8_tile_gemm.h"
 
 namespace {
@@ -25,7 +16,7 @@ struct __align__(16) Stage {
     __nv_bfloat16 x[BM][X_STRIDE];
     int8_t w[BN][W_STRIDE];
     float scale[BN][2];
-    int split[BN];
+    int hi_from[BN];
 };
 
 __device__ __forceinline__ void cp_async16(void *smem, const void *gmem, bool valid) {
@@ -84,13 +75,13 @@ __device__ void load_stage(Stage &st, const __nv_bfloat16 *__restrict__ x, Int8P
         bool valid = gn < w.n_out && blk < n_scale;
         if (ASYNC) cp_async4(&st.scale[r][half], valid ? w.scale + blk : w.scale, valid);
         else st.scale[r][half] = valid ? w.scale[blk] : 0.0f;
-        if (half == 0) st.split[r] = INT8_PIN_BLOCK - (int)(flat % INT8_PIN_BLOCK);
+        if (half == 0) st.hi_from[r] = INT8_PIN_BLOCK - (int)(flat % INT8_PIN_BLOCK);
     }
 }
 
-__device__ __forceinline__ uint32_t unfold_pair(const int8_t *row, int kk, float s_lo, float s_hi, int split) {
-    float a = (float)row[kk] * (kk < split ? s_lo : s_hi);
-    float b = (float)row[kk + 1] * (kk + 1 < split ? s_lo : s_hi);
+__device__ __forceinline__ uint32_t unfold_pair(const int8_t *row, int kk, float s_lo, float s_hi, int hi_from) {
+    float a = (float)row[kk] * (kk < hi_from ? s_lo : s_hi);
+    float b = (float)row[kk + 1] * (kk + 1 < hi_from ? s_lo : s_hi);
     __nv_bfloat162 v = __floats2bfloat162_rn(a, b);
     return *reinterpret_cast<uint32_t *>(&v);
 }
@@ -147,14 +138,13 @@ __global__ void __launch_bounds__(THREADS) int8_tile_gemm_kernel(const __nv_bflo
             for (int j = 0; j < 4; j++) {
                 int n = wn + j * 8 + g;
                 float s_lo = st.scale[n][0], s_hi = st.scale[n][1];
-                int split = st.split[n];
-                uint32_t b[2] = {unfold_pair(st.w[n], k16 + 2 * t, s_lo, s_hi, split),
-                                 unfold_pair(st.w[n], k16 + 2 * t + 8, s_lo, s_hi, split)};
+                int hi_from = st.hi_from[n];
+                uint32_t b[2] = {unfold_pair(st.w[n], k16 + 2 * t, s_lo, s_hi, hi_from),
+                                 unfold_pair(st.w[n], k16 + 2 * t + 8, s_lo, s_hi, hi_from)};
                 for (int i = 0; i < 2; i++) mma_bf16_16816(acc[i][j], a[i], b);
             }
         }
     }
-    cp_async_wait<0>();
 
     for (int i = 0; i < 2; i++) {
         for (int j = 0; j < 4; j++) {
@@ -170,7 +160,7 @@ __global__ void __launch_bounds__(THREADS) int8_tile_gemm_kernel(const __nv_bflo
     }
 }
 
-}  // namespace
+}
 
 cudaError_t int8_tile_gemm_bf16(const __nv_bfloat16 *x, Int8PinLinear w, float *y, int m, cudaStream_t stream) {
     if (m < 0 || w.n_out <= 0 || w.k_in <= 0 || !x || !w.q || !w.scale || !y) return cudaErrorInvalidValue;

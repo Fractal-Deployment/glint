@@ -1,12 +1,3 @@
-/* tests/test_int8_tile_gemm.cu: int8_tile_gemm_bf16 against references on the dequantized weights.
- * Synthetic shapes cover M, N and K tails, odd K and scale blocks that straddle rows; they are
- * checked against a host double GEMM. With a pin path, real Phi-4-mini linears are checked against
- * the host double GEMM for small M and against cuBLAS on the bf16-dequantized weights for M = 2048.
- * Error is |y - ref| / sum_k |x_k * w_k|, so the bound does not depend on cancellation in the dot.
- * Usage: test_int8_tile_gemm [--quick] [PIN.safetensors]
- * Exit: 0 PASS, 1 FAIL, 2 usage, 3 setup or CUDA error.
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -216,7 +207,7 @@ static void check_vs_cublas(const char *label, const __nv_bfloat16 *h_x, const i
     CK(cudaFree(d_y_abs));
 }
 
-static int pin_linear(const SafeTensors *st, const char *stem, const int8_t **q, const float **s, int *n, int *k) {
+static void pin_linear(const SafeTensors *st, const char *stem, const int8_t **q, const float **s, int *n, int *k) {
     char name[320];
     snprintf(name, sizeof(name), "%s.weight", stem);
     const TensorEntry *eq = safetensors_find(st, name);
@@ -235,7 +226,6 @@ static int pin_linear(const SafeTensors *st, const char *stem, const int8_t **q,
     }
     *q = (const int8_t *)eq->data;
     *s = (const float *)es->data;
-    return 0;
 }
 
 int main(int argc, char **argv) {
