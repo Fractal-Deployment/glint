@@ -148,3 +148,49 @@ extern "C" cudaError_t int8_mma_gemm_plug(const __nv_bfloat16 *x, Int8MmaLinear 
     k_int8_mma_gemm<<<grid, 128, 0, stream>>>(xq, sx, plug_i8, plug_scale, y, m, w.n_out, w.k_in, 1);
     return cudaGetLastError();
 }
+
+/* Resolution: r = x - dequant(xq, sx) is quantized again per (row, 64-block) with the same rule. */
+__global__ void k_quant_act_resid(const __nv_bfloat16 *x, const int8_t *xq, const float *sx, int m, int k_in,
+                                  int8_t *rq, float *sr) {
+    int nkb = k_in / BK;
+    int row = blockIdx.x / nkb;
+    int kb = blockIdx.x % nkb;
+    int t = threadIdx.x;
+    size_t i = (size_t)row * k_in + (size_t)kb * BK + t;
+    float w = __bfloat162float(x[i]) - (float)xq[i] * sx[(size_t)row * nkb + kb];
+    float a = fabsf(w);
+    for (int o = 16; o > 0; o >>= 1) a = fmaxf(a, __shfl_xor_sync(0xffffffffu, a, o));
+    __shared__ float sh[2];
+    if ((t & 31) == 0) sh[t >> 5] = a;
+    __syncthreads();
+    float am = fmaxf(sh[0], sh[1]);
+    float s = (am > 0.f) ? (am / 127.f) : 1.f;
+    if (t == 0) sr[(size_t)row * nkb + kb] = s;
+    int v = (int)rintf(w / s);
+    v = v > 127 ? 127 : (v < -127 ? -127 : v);
+    rq[i] = (int8_t)v;
+}
+
+/* Y = X (W [+ plug])^T with the activation's quantization residual added back as a second INT8 pass:
+ * y = (xq*sx) W^T + (rq*sr) W^T. plug_q4/plug_scale/plug_i8 may all be NULL (no plug). rq/sr are caller
+ * scratch of the same size as xq/sx. */
+extern "C" cudaError_t int8_mma_gemm_resolve(const __nv_bfloat16 *x, Int8MmaLinear w, const uint8_t *plug_q4,
+                                             const float *plug_scale, float *y, int m, int8_t *xq, float *sx,
+                                             int8_t *rq, float *sr, int8_t *plug_i8, cudaStream_t stream) {
+    if (!x || !y || !xq || !sx || !rq || !sr || !w.q || !w.scale || m < 1 || w.n_out < 1 || w.k_in < BK ||
+        (w.k_in % BK) != 0 || (plug_q4 != NULL) != (plug_i8 != NULL) || (plug_q4 != NULL) != (plug_scale != NULL))
+        return cudaErrorInvalidValue;
+    int nkb = w.k_in / BK;
+    size_t n = (size_t)w.n_out * w.k_in;
+    dim3 grid((w.n_out + BN - 1) / BN, (m + BM - 1) / BM);
+    k_quant_act<<<m * nkb, 64, 0, stream>>>(x, m, w.k_in, xq, sx);
+    k_quant_act_resid<<<m * nkb, 64, 0, stream>>>(x, xq, sx, m, w.k_in, rq, sr);
+    k_int8_mma_gemm<<<grid, 128, 0, stream>>>(xq, sx, w.q, w.scale, y, m, w.n_out, w.k_in, 0);
+    k_int8_mma_gemm<<<grid, 128, 0, stream>>>(rq, sr, w.q, w.scale, y, m, w.n_out, w.k_in, 1);
+    if (plug_q4) {
+        k_unpack_res4<<<(unsigned)((n + 255) / 256), 256, 0, stream>>>(plug_q4, plug_i8, n);
+        k_int8_mma_gemm<<<grid, 128, 0, stream>>>(xq, sx, plug_i8, plug_scale, y, m, w.n_out, w.k_in, 1);
+        k_int8_mma_gemm<<<grid, 128, 0, stream>>>(rq, sr, plug_i8, plug_scale, y, m, w.n_out, w.k_in, 1);
+    }
+    return cudaGetLastError();
+}
