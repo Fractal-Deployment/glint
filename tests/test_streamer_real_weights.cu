@@ -2,12 +2,9 @@
  * the two-slot streamer into H-TILE. Gates: streamed output is bit-identical to
  * the same H-TILE run with plugs resident over four back-to-back passes (the
  * last two overwrite each slot with random bytes once its reader is released),
- * and resident output matches a host decode
- * GEMM within a recursive-summation bound. Error against the BF16 GEMM of the
- * original weights is printed, not gated.
+ * and resident output matches a host decode GEMM within an f32 summation bound.
+ * Error against the BF16 GEMM of the original weights is printed, not gated.
  *
- * nvcc -O2 -std=c++17 -arch=sm_86 -Iinclude tests/test_streamer_real_weights.cu \
- *   cuda/glint_plug_streamer.cu cuda/glint_htile.cu cuda/glint_encode.cu -o test_streamer_real_weights
  * ./test_streamer_real_weights <model-00001-of-00002.safetensors> [n_layers=2] [M=4]
  */
 #include "glint_cells.h"
@@ -119,13 +116,14 @@ static float *download(const float *d, size_t n) {
     return h;
 }
 
-/* Host decode GEMM in double from the same hole/plug/absmax, plus the BF16
- * GEMM of the source weights. Gate: |y_gpu - y_ref| <= (K + 2) * 2^-23 * sum|w x|,
- * a bound on f32 recursive summation of K rounded products. */
+/* Worst-case error of f32 recursive summation of K rounded products. */
+static double f32_dot_error_bound(int K, double sum_abs_terms) {
+    return (double)(K + 2) * ldexp(1.0, -23) * sum_abs_terms;
+}
+
 static int compare_host(const Unit *u, int M, const float *y_gpu) {
     double worst_ratio = 0.0, max_abs = 0.0, err2 = 0.0, ref2 = 0.0;
     int64_t over = 0;
-    const double unit_bound = (double)(u->K + 2) * ldexp(1.0, -23);
     for (int n = 0; n < u->N; ++n) {
         for (int m = 0; m < M; ++m) {
             double glint = 0.0, mag = 0.0, bf16 = 0.0;
@@ -143,7 +141,7 @@ static int compare_host(const Unit *u, int M, const float *y_gpu) {
             const double got = (double)y_gpu[(int64_t)m * u->N + n];
             const double diff = fabs(got - glint);
             if (diff > max_abs) max_abs = diff;
-            const double bound = unit_bound * mag;
+            const double bound = f32_dot_error_bound(u->K, mag);
             over += diff > bound;
             if (bound > 0.0 && diff / bound > worst_ratio) worst_ratio = diff / bound;
             err2 += (got - bf16) * (got - bf16);
@@ -203,6 +201,10 @@ int main(int argc, char **argv) {
 
     for (int p = 0; p < kPasses; ++p) {
         REQUIRE(glint_plug_streamer_start(streamer) == 0, "start pass %d", p);
+        if (n_units > 1) {
+            const uint8_t *early = NULL;
+            REQUIRE(glint_plug_streamer_acquire(streamer, 1, &early) == -10, "acquire(1) before release(0) must be refused");
+        }
         for (int u = 0; u < n_units; ++u) {
             Unit *x = &units[u];
             const uint8_t *d_slot = NULL;

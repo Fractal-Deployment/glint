@@ -1,7 +1,5 @@
 /* safetensors_c.h must grow past any fixed tensor count and refuse files whose
- * header or tensor byte ranges fall outside the file.
- * gcc -std=c11 -g -fsanitize=address,undefined -Iinclude tests/test_st_bounds.c -o test_st_bounds
- */
+ * header or tensor byte ranges fall outside the file. */
 #define _DEFAULT_SOURCE
 #include "safetensors_c.h"
 #include <stdio.h>

@@ -149,8 +149,6 @@ static inline int _st_push(SafeTensors *st, const TensorEntry *e) {
     return 0;
 }
 
-/* Returns 0, or <0 with *st left closed: -1 open/stat, -2 mmap, -3 malformed
- * header, -4 header or a tensor's [begin,end) outside the file, -5 out of memory. */
 static inline int _st_parse(SafeTensors *st) {
     if (st->file_size < 8) return -4;
     memcpy(&st->header_len, st->mmap_ptr, 8);
@@ -201,6 +199,8 @@ done:
 
 static inline void safetensors_close(SafeTensors *st);
 
+/* Returns 0, or <0 with *st left closed: -1 open/stat, -2 mmap, -3 malformed
+ * header, -4 header or a tensor's [begin,end) outside the file, -5 out of memory. */
 static inline int safetensors_open(SafeTensors *st, const char *path) {
     memset(st, 0, sizeof(*st));
     int fd = open(path, O_RDONLY);

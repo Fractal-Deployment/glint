@@ -29,7 +29,8 @@ void glint_plug_streamer_destroy(GlintPlugStreamer *s);
 /* Set host plug data for layer l into pinned host memory. */
 int glint_plug_streamer_set_host_data(GlintPlugStreamer *s, int layer, const void *host_src, uint64_t bytes);
 
-/* Start prefetching layer 0 before the layer loop begins. */
+/* Start prefetching layer 0 before the layer loop begins.
+ * Returns -6 if the previous pass did not release its last layer. */
 int glint_plug_streamer_start(GlintPlugStreamer *s);
 
 /* Acquire device slot for layer l on compute_stream:
@@ -37,6 +38,7 @@ int glint_plug_streamer_start(GlintPlugStreamer *s);
  *   after the last released reader of that slot.
  * - On compute_stream: waits for layer l H2D copy to complete.
  * - Returns pointer to device plug buffer for layer l.
+ * - Returns -10 unless layer l - 1 was released (or l == 0 after start).
  */
 int glint_plug_streamer_acquire(GlintPlugStreamer *s, int layer, const uint8_t **out_dev_plug);
 
