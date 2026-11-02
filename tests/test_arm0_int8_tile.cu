@@ -23,6 +23,10 @@ struct PinLinears {
     GlintPlugStreamer *streamer;
     uint64_t off_q[ARM0_N_LINEARS], off_s[ARM0_N_LINEARS];
     const uint8_t *slot;
+    uint8_t *pq[N_LAYERS][ARM0_N_LINEARS];
+    float *ps[N_LAYERS][ARM0_N_LINEARS];
+    int8_t *plug_i8;
+    size_t plug_bytes;
 };
 
 static uint64_t align256(uint64_t v) { return (v + 255) & ~255ull; }
@@ -85,7 +89,10 @@ static void pin_linear(void *ctx, int layer, Arm0Linear which, const __nv_bfloat
     if (lin->path == GEMM_MMA_W8A8) {
         const Int8PinLinear &p = lin->packed[layer][which];
         Int8MmaLinear w = {p.q, p.scale, p.n_out, p.k_in};
-        CK(int8_mma_gemm(x, w, y, m, lin->xq, lin->sx, 0));
+        if (lin->pq[layer][which])
+            CK(int8_mma_gemm_plug(x, w, lin->pq[layer][which], lin->ps[layer][which], y, m, lin->xq, lin->sx, lin->plug_i8, 0));
+        else
+            CK(int8_mma_gemm(x, w, y, m, lin->xq, lin->sx, 0));
         return;
     }
     int n_out = ARM0_LINEAR[which].n_out, k_in = ARM0_LINEAR[which].k_in;
@@ -173,6 +180,35 @@ int main(int argc, char **argv) {
     } else
     for (int l = 0; l < N_LAYERS; l++)
         for (int j = 0; j < ARM0_N_LINEARS; j++) load_linear(&g_lin, &pin, l, (Arm0Linear)j);
+    /* ARM0_PLUG_FILE (p7_plug_res4_v1) + ARM0_PLUG_LAYERS (comma list): resident mma path only. */
+    const char *plug_file = getenv("ARM0_PLUG_FILE"), *plug_layers = getenv("ARM0_PLUG_LAYERS");
+    if (plug_file && plug_layers && *plug_layers && path == GEMM_MMA_W8A8) {
+        SafeTensors plug;
+        if (safetensors_open(&plug, plug_file) != 0) setup_fail("cannot open plug %s", plug_file);
+        size_t maxn = 0;
+        for (int j = 0; j < ARM0_N_LINEARS; j++) { size_t n = (size_t)ARM0_LINEAR[j].n_out * ARM0_LINEAR[j].k_in; if (n > maxn) maxn = n; }
+        CK(cudaMalloc(&g_lin.plug_i8, maxn));
+        for (const char *c = plug_layers; *c;) {
+            int l = atoi(c);
+            if (l < 0 || l >= N_LAYERS) setup_fail("bad plug layer %d", l);
+            for (int j = 0; j < ARM0_N_LINEARS; j++) {
+                size_t numel = (size_t)ARM0_LINEAR[j].n_out * ARM0_LINEAR[j].k_in;
+                char name[256], qn[300], sn[300];
+                snprintf(name, sizeof(name), "model.layers.%d.%s.weight", l, ARM0_LINEAR[j].name);
+                snprintf(qn, sizeof(qn), "%s.plug_q4", name); snprintf(sn, sizeof(sn), "%s.plug_scale", name);
+                size_t qb = (numel + 1) / 2, sb = numel / INT8_PIN_BLOCK * sizeof(float);
+                const TensorEntry *eq = need_tensor(&plug, NULL, qn, "U8", qb), *es = need_tensor(&plug, NULL, sn, "F32", sb);
+                CK(cudaMalloc(&g_lin.pq[l][j], qb)); CK(cudaMalloc(&g_lin.ps[l][j], sb));
+                CK(cudaMemcpy(g_lin.pq[l][j], eq->data, qb, cudaMemcpyHostToDevice));
+                CK(cudaMemcpy(g_lin.ps[l][j], es->data, sb, cudaMemcpyHostToDevice));
+                g_lin.plug_bytes += qb + sb;
+            }
+            while (*c && *c != ',') c++;
+            if (*c == ',') c++;
+        }
+        printf("Plugged layers: %s | plug bytes %zu\n", plug_layers, g_lin.plug_bytes);
+        safetensors_close(&plug);
+    }
     CK(cudaDeviceSynchronize());
     size_t used_after_linears = vram_used();
     printf("Linear path: %s\n", path_name);
