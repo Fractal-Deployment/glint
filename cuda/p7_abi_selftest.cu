@@ -147,3 +147,13 @@ extern "C" int p7_int8_gemm_flat(const void *x_bf16, const void *q, const void *
     Int8MmaLinear w = {(const int8_t *)q, (const float *)scale, n_out, k_in};
     return (int)int8_mma_gemm((const __nv_bfloat16 *)x_bf16, w, (float *)y, m, (int8_t *)xq, (float *)sx, (cudaStream_t)stream);
 }
+
+/* Fused late plug over FFI: base + res4 plug slice in one kernel (int8_mma_gemm_plug_fused). */
+extern "C" int p7_int8_gemm_plug_flat(const void *x_bf16, const void *q, const void *scale, const void *plug_q4,
+                                      const void *plug_scale, int n_out, int k_in, void *y, int m, void *xq, void *sx,
+                                      void *stream) {
+    Int8MmaLinear w = {(const int8_t *)q, (const float *)scale, n_out, k_in};
+    return (int)int8_mma_gemm_plug_fused((const __nv_bfloat16 *)x_bf16, w, (const uint8_t *)plug_q4,
+                                         (const float *)plug_scale, (float *)y, m, (int8_t *)xq, (float *)sx,
+                                         (cudaStream_t)stream);
+}

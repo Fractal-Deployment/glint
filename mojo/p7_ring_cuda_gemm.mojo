@@ -1,5 +1,5 @@
 # mojo/p7_ring_cuda_gemm.mojo — option 1 wiring: the Mojo prefetch ring feeds the CUDA INT8 GEMM.
-# Layer blobs (INT8 q then F32 scales, pin layout) stream from pinned host memory into a 2-slot ring on the Mojo
+# Layer blobs (INT8 q, F32 scales, res4 plug nibbles, plug F32 scales; pin + plug layout) stream from pinned host memory into a 2-slot ring on the Mojo
 # context stream while int8_mma_gemm (libp7_kernels.so via p7_int8_gemm_flat) runs on a second Mojo stream through
 # its native CUDA handle. Each layer's output must hash equal to the same GEMM with every layer resident.
 # Run: mojo run mojo/p7_ring_cuda_gemm.mojo LIB.so
@@ -15,13 +15,15 @@ comptime K = 3072
 comptime N = 8192
 comptime QB = N * K
 comptime SB = N * (K // 64) * 4
-comptime BLOB = QB + SB
+comptime PQ = QB // 2             # res4 plug nibbles
+comptime BLOB = QB + SB + PQ + SB   # q, scales, plug nibbles, plug scales
 
 
 def main() raises:
     var args = argv()
     var lib = OwnedDLHandle(String(args[1]) if len(args) > 1 else String("/home/workspace/fractal-deployment/glint/lib/libp7_kernels.so"))
-    var gemm = lib.get_function[Int32]("p7_int8_gemm_flat")
+    var gemm_base = lib.get_function[Int32]("p7_int8_gemm_flat")
+    var gemm = lib.get_function[Int32]("p7_int8_gemm_plug_flat")
     var ctx = DeviceContext()
     var ks = ctx.create_stream()
     var ks_native = unsafe_cast[Type=NoneType](CUDA(ks))
@@ -39,6 +41,15 @@ def main() raises:
         ctx.synchronize()
         for i in range(SB):
             h[QB + i] = sh.unsafe_ptr().unsafe_bitcast[UInt8]()[unsafe_offset=i]
+        for i in range(PQ):
+            seed = seed * 1664525 + 1013904223
+            h[QB + SB + i] = UInt8((seed >> 24) & 0xFF)
+        var ph = ctx.enqueue_create_host_buffer[DType.float32](SB // 4)
+        for i in range(SB // 4):
+            ph[i] = Float32(0.00003) * Float32(1 + (i + l) % 5)
+        ctx.synchronize()
+        for i in range(SB):
+            h[QB + SB + PQ + i] = ph.unsafe_ptr().unsafe_bitcast[UInt8]()[unsafe_offset=i]
         host.append(h^)
     var xh = ctx.enqueue_create_host_buffer[DType.uint16](M * K)
     for i in range(M * K):
@@ -64,8 +75,8 @@ def main() raises:
     ctx.synchronize()
     for l in range(LAYERS):
         var q = Int(res_blobs[l].unsafe_ptr())
-        var rc = gemm(Int(x.unsafe_ptr()), q, q + QB, Int32(N), Int32(K), Int(ydev.unsafe_ptr()), Int32(M),
-                      Int(xq.unsafe_ptr()), Int(sx.unsafe_ptr()), Int(ks_native.value()))
+        var rc = gemm(Int(x.unsafe_ptr()), q, q + QB, q + QB + SB, q + QB + SB + PQ, Int32(N), Int32(K),
+                      Int(ydev.unsafe_ptr()), Int32(M), Int(xq.unsafe_ptr()), Int(sx.unsafe_ptr()), Int(ks_native.value()))
         if rc != 0:
             raise Error("resident gemm rc=" + String(rc))
         ks.synchronize()
@@ -75,6 +86,19 @@ def main() raises:
         for i in range(M * N):
             hsh = (hsh ^ UInt64(yhost[i].to_bits[DType.uint32]())) * 1099511628211
         res_hash.append(hsh)
+    # sanity: the plug really changes the output (layer 0 with the base-only entry point)
+    var q0 = Int(res_blobs[0].unsafe_ptr())
+    var rc0 = gemm_base(Int(x.unsafe_ptr()), q0, q0 + QB, Int32(N), Int32(K), Int(ydev.unsafe_ptr()), Int32(M),
+                        Int(xq.unsafe_ptr()), Int(sx.unsafe_ptr()), Int(ks_native.value()))
+    if rc0 != 0:
+        raise Error("base gemm rc=" + String(rc0))
+    ks.synchronize()
+    ctx.enqueue_copy(dst_buf=yhost, src_buf=ydev)
+    ctx.synchronize()
+    var bh = UInt64(1469598103934665603)
+    for i in range(M * N):
+        bh = (bh ^ UInt64(yhost[i].to_bits[DType.uint32]())) * 1099511628211
+    print("layer0_base_only_hash", bh, "plug_changes_output", bh != res_hash[0])
     res_blobs.clear()
 
     # streamed: 2-slot ring; copies on ctx's stream, GEMM on ks, events between
@@ -98,8 +122,8 @@ def main() raises:
             ctx.stream().record_event(copy_done[l + 1])
         ks.enqueue_wait_for(copy_done[l])
         var q = Int(slot0.unsafe_ptr()) if l % 2 == 0 else Int(slot1.unsafe_ptr())
-        var rc = gemm(Int(x.unsafe_ptr()), q, q + QB, Int32(N), Int32(K), Int(ydev.unsafe_ptr()), Int32(M),
-                      Int(xq.unsafe_ptr()), Int(sx.unsafe_ptr()), Int(ks_native.value()))
+        var rc = gemm(Int(x.unsafe_ptr()), q, q + QB, q + QB + SB, q + QB + SB + PQ, Int32(N), Int32(K),
+                      Int(ydev.unsafe_ptr()), Int32(M), Int(xq.unsafe_ptr()), Int(sx.unsafe_ptr()), Int(ks_native.value()))
         if rc != 0:
             raise Error("streamed gemm rc=" + String(rc))
         ks.record_event(comp_done[l])
