@@ -12,5 +12,13 @@ LEASE="${GPU_LEASE:-/home/workspace/fractal-deployment/training_orchestrator/scr
 
 lxc exec "$CONTAINER" -- bash -c "mkdir -p '$BUILD_DIR' && /usr/bin/nvcc -O2 -arch=sm_86 \
   -o '$BUILD_DIR/test_arm0_bf16_full' '$ROOT/tests/test_arm0_bf16_full.cu' -lcublas -lcrypto" || exit 3
+LOG="$(mktemp)"
+trap 'rm -f "$LOG"' EXIT
+status=0
 bash "$LEASE" -- lxc exec "$CONTAINER" -- "$BUILD_DIR/test_arm0_bf16_full" \
-  "$@" "$MODEL_DIR" "$ROOT/docs/p7_mode3_fold/artifacts"
+  "$@" "$MODEL_DIR" "$ROOT/docs/p7_mode3_fold/artifacts" | tee "$LOG" || status=$?
+case "$status" in
+  0|2|3) exit "$status" ;;
+  1) grep -q '^VERDICT: FAIL' "$LOG" && exit 1 || exit 3 ;;
+  *) exit 3 ;;
+esac

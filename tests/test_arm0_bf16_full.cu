@@ -4,8 +4,6 @@
  * Verifies Gate 1:
  *   - Top-1 argmax token agreement >= 99.0% vs HuggingFace Oracle
  *   - Perplexity within 1.0% of HuggingFace Oracle
- * The oracle ppl, top-1 sha256 and token sha256 come from hf_meta.json, written
- * by scripts/p7_hf_reference_dump.py; the committed oracle must match it.
  * Exit: 0 gate PASS (or INT8 report), 1 gate FAIL, 2 usage, 3 setup, I/O or CUDA error.
  */
 

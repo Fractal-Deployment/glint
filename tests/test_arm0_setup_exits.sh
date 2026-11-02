@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# Exit 1 from the Arm 0 gate must mean gate FAIL. Setup and I/O errors exit 3,
-# before the forward pass.
-# Usage: tests/test_arm0_setup_exits.sh BIN MODEL_DIR ARTIFACTS_DIR
 set -uo pipefail
-BIN="$1" MODEL="$2" ART="$3"
+BIN="${1:?usage: $0 BIN MODEL_DIR ARTIFACTS_DIR}" MODEL="${2:?usage: $0 BIN MODEL_DIR ARTIFACTS_DIR}" ART="${3:?usage: $0 BIN MODEL_DIR ARTIFACTS_DIR}"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/arm0_exits_XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 failed=0

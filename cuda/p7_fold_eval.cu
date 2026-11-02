@@ -736,7 +736,6 @@ int main(int argc, char** argv) {
         double mean_ce = total_loss / (n_tokens - 1);
         metrics[1].ppl = exp(mean_ce);
 
-        /* Decode 16 steps */
         cudaEventRecord(ev0, compute_stream);
         for (int step = 0; step < DECODE_STEPS; step++) {
             embed_lookup_kernel<<<dim3((HIDDEN_DIM + 255) / 256, 1), 256, 0, compute_stream>>>(
@@ -927,7 +926,6 @@ int main(int argc, char** argv) {
         double mean_ce = total_loss / (n_tokens - 1);
         metrics[2].ppl = exp(mean_ce);
 
-        /* Decode 16 steps */
         cudaEventRecord(ev0, compute_stream);
         for (int step = 0; step < DECODE_STEPS; step++) {
             embed_lookup_kernel<<<dim3((HIDDEN_DIM + 255) / 256, 1), 256, 0, compute_stream>>>(
@@ -1068,7 +1066,6 @@ int main(int argc, char** argv) {
             for (int l = 0; l < N_LAYERS; l++) metrics[3].per_layer_stall_ms[l] = s_stats.per_layer_stall_ms[l];
         }
 
-        /* Decode 16 steps with streaming */
         cudaEventRecord(ev0, compute_stream);
         for (int step = 0; step < DECODE_STEPS; step++) {
             p7_plug_streamer_reset_stats(streamer);
@@ -1204,7 +1201,6 @@ int main(int argc, char** argv) {
             cudaMemcpy(arm4_final_logits, d_logits, (n_tokens - 1) * VOCAB_SIZE * sizeof(float), cudaMemcpyDeviceToHost);
         }
 
-        /* Decode 16 steps */
         cudaEventRecord(ev0, compute_stream);
         for (int step = 0; step < DECODE_STEPS; step++) {
             embed_lookup_kernel<<<dim3((HIDDEN_DIM + 255) / 256, 1), 256, 0, compute_stream>>>(

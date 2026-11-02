@@ -5,7 +5,7 @@ Usage: python p7_hf_reference_dump.py TOKENS_TXT OUT_DIR [MODEL_DIR] [ATTN_IMPL]
 Writes to OUT_DIR:
   hf_pos_stats.bin   float32 [2047, 4]: loss, top1 id, top1 logit, top2 logit
   hf_hidden.bin      float32 [33, len(POSITIONS), 3072]: embeddings, layers 0..31 output, final norm
-  hf_top1.bin        uint32 [2047]: top-1 ids (the gate's oracle_top1_2048.bin must match its sha256)
+  hf_top1.bin        uint32 [2047]: top-1 ids
   hf_meta.json       ppl, top1 and tokens sha256, positions, versions, model dtype, attention ops run
 """
 import hashlib
