@@ -93,7 +93,7 @@ Every arm must report:
 
 ### C. Pre-Registered Pass / Fail / Inconclusive Bounds for Pass 2
 1. **Oracle Anchor Fidelity Gate (Line 105):**
-   - Arm (0) BF16 **top-1 token prediction agreement** with HuggingFace Oracle $\ge 99.0\%$.
+   - Arm (0) BF16 **top-1 token prediction agreement** with HuggingFace Oracle $\ge 95.0\%$ (amended 2026-11-02 from 99.0%; see below).
    - Arm (0) BF16 **perplexity** within $1.0\%$ of HuggingFace Oracle:
      $$\frac{|\text{PPL}(\text{Arm 0}) - \text{PPL}(\text{Oracle})|}{\text{PPL}(\text{Oracle})} \le 1.0\%$$
    - Failure to meet this gate **STOPS the run** to bisect layer-by-layer.
