@@ -8,14 +8,14 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 K="${1:-8}"; OUT="${2:-plug_selection.tsv}"
-W="${P7_BUILD_DIR:-/mnt/spill/compile_scratch/wdm}"
+B="${P7_BUILD_DIR:-/root/p7build}"; D="${P7_DATA_DIR:-/home/workspace/lakes/p7_glint}"
 M="${P7_BF16_MODEL_DIR:-/opt/models/.hf_cache/hub/models--microsoft--Phi-4-mini-instruct/snapshots/cfbefacb99257ffa30c83adab238a50856ac3083}"
 PIN="${P7_PIN:-/home/workspace/pins/Phi-4-mini-int8-from-bf16/model.safetensors}"
 LEASE="${GPU_LEASE:-/home/workspace/fractal-deployment/training_orchestrator/scripts/with_gpu_flock.sh}"
 WMAP="$ROOT/docs/p7_mode3_fold/artifacts/E_PLUG_RES4_phi4mini_error.json"
 run() { # name layers
-  local o; o="$(bash "$LEASE" -- lxc exec 40-Runtime-Deps -- env ARM0_LOGITS_REF="$W/anchor_logits.bin" ARM0_PLUG_FILE="$W/phi4_res4.plug.safetensors" \
-      ARM0_PLUG_LAYERS="$2" "$W/arm0i" --gemm mma "$PIN" "$M" "$ROOT/docs/p7_mode3_fold/artifacts" 2>&1)"
+  local o; o="$(bash "$LEASE" -- lxc exec 40-Runtime-Deps -- env ARM0_LOGITS_REF="$D/anchor_logits.bin" ARM0_PLUG_FILE="$D/phi4_res4.plug.safetensors" \
+      ARM0_PLUG_LAYERS="$2" "$B/arm0i" --gemm mma "$PIN" "$M" "$ROOT/docs/p7_mode3_fold/artifacts" 2>&1)"
   local ppl t1 klm klp
   ppl="$(sed -n 's/^Measured Perplexity: *//p' <<<"$o")"; t1="$(sed -n 's/^Top-1 Matches: *\([0-9]*\) .*/\1/p' <<<"$o")"
   klm="$(sed -n 's/.*per token: mean \([^ ]*\).*/\1/p' <<<"$o")"; klp="$(sed -n 's/.*p99 \([^ ]*\) .*/\1/p' <<<"$o")"
