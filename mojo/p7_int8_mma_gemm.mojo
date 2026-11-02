@@ -67,9 +67,8 @@ def mma_s8(
     ](a0, a1, a2, a3, b0, b1, c[0], c[1], c[2], c[3])
     return SIMD[DType.int32, 4](r[0], r[1], r[2], r[3])
 
-def pack4(p: Pointer[Int8, MutUntrackedOrigin, address_space=AddressSpace.SHARED], off: Int) -> UInt32:
-    return (UInt32(Int32(p[unsafe_offset=off]) & 0xFF) | (UInt32(Int32(p[unsafe_offset=off + 1]) & 0xFF) << 8)
-            | (UInt32(Int32(p[unsafe_offset=off + 2]) & 0xFF) << 16) | (UInt32(Int32(p[unsafe_offset=off + 3]) & 0xFF) << 24))
+def pack4(p: Pointer[UInt32, MutUntrackedOrigin, address_space=AddressSpace.SHARED], off: Int) -> UInt32:
+    return p[unsafe_offset=off >> 2]
 
 def int8_mma_gemm[
     xqo: ImmOrigin, sxo: ImmOrigin, wo: ImmOrigin, swo: ImmOrigin, yo: MutOrigin
@@ -104,29 +103,35 @@ def int8_mma_gemm[
             var idx = tid + i * 128
             var r = idx >> 2
             var c = (idx & 3) * 16
-            for j in range(16):
-                var va = Int8(0)
-                var vb = Int8(0)
+            var sA32 = sA.unsafe_bitcast[UInt32]()
+            var sB32 = sB.unsafe_bitcast[UInt32]()
+            var xq32 = xq.unsafe_bitcast[UInt32]()
+            var wq32 = wq.unsafe_bitcast[UInt32]()
+            comptime for w in range(4):
+                var va = UInt32(0)
+                var vb = UInt32(0)
                 if m0 + r < mm:
-                    va = xq[unsafe_offset=(m0 + r) * K + kb * 64 + c + j]
+                    va = xq32[unsafe_offset=(((m0 + r) * K + kb * 64 + c) >> 2) + w]
                 if n0 + r < nn:
-                    vb = wq[unsafe_offset=(n0 + r) * K + kb * 64 + c + j]
-                sA[unsafe_offset=r * SPAD + c + j] = va
-                sB[unsafe_offset=r * SPAD + c + j] = vb
+                    vb = wq32[unsafe_offset=(((n0 + r) * K + kb * 64 + c) >> 2) + w]
+                sA32[unsafe_offset=((r * SPAD + c) >> 2) + w] = va
+                sB32[unsafe_offset=((r * SPAD + c) >> 2) + w] = vb
         if tid < BM:
             sSx[unsafe_offset=tid] = sx[unsafe_offset=(m0 + tid) * NKB + kb] if m0 + tid < mm else Float32(0)
         else:
             sSw[unsafe_offset=tid - BM] = sw[unsafe_offset=(n0 + tid - BM) * NKB + kb] if n0 + tid - BM < nn else Float32(0)
         barrier()
+        var sA32f = sA.unsafe_bitcast[UInt32]()
+        var sB32f = sB.unsafe_bitcast[UInt32]()
         var ic = InlineArray[SIMD[DType.int32, 4], 8](fill=SIMD[DType.int32, 4](0))
         comptime for ks in range(2):
-            var a0 = pack4(sA, (rb + g) * SPAD + ks * 32 + t * 4)
-            var a1 = pack4(sA, (rb + g + 8) * SPAD + ks * 32 + t * 4)
-            var a2 = pack4(sA, (rb + g) * SPAD + ks * 32 + 16 + t * 4)
-            var a3 = pack4(sA, (rb + g + 8) * SPAD + ks * 32 + 16 + t * 4)
+            var a0 = pack4(sA32f, (rb + g) * SPAD + ks * 32 + t * 4)
+            var a1 = pack4(sA32f, (rb + g + 8) * SPAD + ks * 32 + t * 4)
+            var a2 = pack4(sA32f, (rb + g) * SPAD + ks * 32 + 16 + t * 4)
+            var a3 = pack4(sA32f, (rb + g + 8) * SPAD + ks * 32 + 16 + t * 4)
             comptime for nt in range(8):
-                var b0 = pack4(sB, (nt * 8 + g) * SPAD + ks * 32 + t * 4)
-                var b1 = pack4(sB, (nt * 8 + g) * SPAD + ks * 32 + 16 + t * 4)
+                var b0 = pack4(sB32f, (nt * 8 + g) * SPAD + ks * 32 + t * 4)
+                var b1 = pack4(sB32f, (nt * 8 + g) * SPAD + ks * 32 + 16 + t * 4)
                 ic[nt] = mma_s8(a0, a1, a2, a3, b0, b1, ic[nt])
         var x0 = sSx[unsafe_offset=rb + g]
         var x1 = sSx[unsafe_offset=rb + g + 8]
