@@ -3,7 +3,10 @@
  * Executes on RTX 3060 via Tensor Core cuBLAS and online softmax causal attention.
  * Verifies Gate 1:
  *   - Top-1 argmax token agreement >= 99.0% vs HuggingFace Oracle
- *   - Perplexity within 1.0% of HuggingFace Oracle (5.486957)
+ *   - Perplexity within 1.0% of HuggingFace Oracle
+ * The oracle ppl, top-1 sha256 and token sha256 come from hf_meta.json, written
+ * by scripts/p7_hf_reference_dump.py; the committed oracle must match it.
+ * Exit: 0 gate PASS (or INT8 report), 1 gate FAIL, 2 usage, 3 setup, I/O or CUDA error.
  */
 
 #include <stdio.h>
@@ -15,6 +18,10 @@
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 #include <cublas_v2.h>
+#include <errno.h>
+#include <openssl/sha.h>
+#include <stdarg.h>
+#include <sys/stat.h>
 
 #include "../include/safetensors_c.h"
 
@@ -30,6 +37,34 @@
 #define ROPE_THETA 10000.0f
 #define ATTENTION_SCALING 1.1902380714238083f
 #define INT8_BLOCK 64
+#define ORIGINAL_MAX_POSITION 4096
+static_assert(2048 <= ORIGINAL_MAX_POSITION, "longrope short_factor applies only below original_max_position_embeddings");
+
+enum { EXIT_GATE_PASS = 0, EXIT_GATE_FAIL = 1, EXIT_USAGE = 2, EXIT_SETUP = 3 };
+
+static void setup_fail(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    printf("SETUP ERROR: ");
+    vprintf(fmt, ap);
+    printf("\n");
+    va_end(ap);
+    exit(EXIT_SETUP);
+}
+
+#define CK(call)                                                                       \
+    do {                                                                               \
+        cudaError_t e_ = (call);                                                       \
+        if (e_ != cudaSuccess) setup_fail("%s:%d %s: %s", __FILE__, __LINE__, #call,   \
+                                          cudaGetErrorString(e_));                     \
+    } while (0)
+
+#define CKB(call)                                                                      \
+    do {                                                                               \
+        cublasStatus_t e_ = (call);                                                    \
+        if (e_ != CUBLAS_STATUS_SUCCESS) setup_fail("%s:%d cuBLAS status %d", __FILE__, \
+                                                    __LINE__, (int)e_);                \
+    } while (0)
 
 __device__ __forceinline__ float bf16r(float x) {
     return __bfloat162float(__float2bfloat16(x));
@@ -312,15 +347,65 @@ static const int DUMP_POS[] = {
 static float g_dump[N_LAYERS + 1][N_DUMP][HIDDEN_DIM];
 
 static void dump_rows(int slot, const float* d_src) {
-    cudaDeviceSynchronize();
+    CK(cudaDeviceSynchronize());
     for (int i = 0; i < N_DUMP; i++)
-        cudaMemcpy(g_dump[slot][i], d_src + (size_t)DUMP_POS[i] * HIDDEN_DIM, HIDDEN_DIM * sizeof(float), cudaMemcpyDeviceToHost);
+        CK(cudaMemcpy(g_dump[slot][i], d_src + (size_t)DUMP_POS[i] * HIDDEN_DIM, HIDDEN_DIM * sizeof(float), cudaMemcpyDeviceToHost));
 }
 
-static const TensorEntry* find_tensor(const SafeTensors *st1, const SafeTensors *st2, const char *name) {
+static const TensorEntry* need_tensor(const SafeTensors *st1, const SafeTensors *st2, const char *name,
+                                      const char *dtype, uint64_t bytes) {
     const TensorEntry *e = safetensors_find(st1, name);
-    if (!e) e = safetensors_find(st2, name);
+    if (!e && st2) e = safetensors_find(st2, name);
+    if (!e) setup_fail("tensor %s missing", name);
+    if (strcmp(e->dtype, dtype) != 0 || e->end - e->begin != bytes)
+        setup_fail("tensor %s is %s with %llu bytes, want %s with %llu", name, e->dtype,
+                   (unsigned long long)(e->end - e->begin), dtype, (unsigned long long)bytes);
     return e;
+}
+
+static char* read_file(const char *path, size_t *len) {
+    FILE *f = fopen(path, "rb");
+    if (!f) setup_fail("cannot open %s", path);
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *buf = (char*)malloc((size_t)n + 1);
+    if (n < 0 || fread(buf, 1, (size_t)n, f) != (size_t)n) setup_fail("cannot read %s", path);
+    fclose(f);
+    buf[n] = '\0';
+    *len = (size_t)n;
+    return buf;
+}
+
+static void sha256_hex(const void *data, size_t len, char out[65]) {
+    unsigned char md[SHA256_DIGEST_LENGTH];
+    SHA256((const unsigned char*)data, len, md);
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) snprintf(out + 2 * i, 3, "%02x", md[i]);
+}
+
+static const char* json_value(const char *json, const char *key) {
+    char pat[64];
+    snprintf(pat, sizeof(pat), "\"%s\":", key);
+    const char *p = strstr(json, pat);
+    if (!p) setup_fail("hf_meta.json has no \"%s\"", key);
+    p += strlen(pat);
+    while (*p == ' ') p++;
+    return p;
+}
+
+static void json_hex64(const char *json, const char *key, char out[65]) {
+    const char *p = json_value(json, key);
+    if (*p != '"' || strspn(p + 1, "0123456789abcdef") != 64 || p[65] != '"')
+        setup_fail("hf_meta.json \"%s\" is not a 64-digit hex string", key);
+    memcpy(out, p + 1, 64);
+    out[64] = '\0';
+}
+
+static void require_sha256(const char *path, const void *data, size_t len, const char *want, const char *meta_key) {
+    char got[65];
+    sha256_hex(data, len, got);
+    if (strcmp(got, want) != 0)
+        setup_fail("%s sha256 %s does not match hf_meta.json %s %s", path, got, meta_key, want);
 }
 
 __global__ void int8_block_dequant_kernel(const int8_t* __restrict__ q, const float* __restrict__ scale,
@@ -332,29 +417,27 @@ __global__ void int8_block_dequant_kernel(const int8_t* __restrict__ q, const fl
 static __nv_bfloat16* upload_linear(const SafeTensors *st1, const SafeTensors *st2, const SafeTensors *int8_pin,
                                     const char *name, size_t numel) {
     __nv_bfloat16 *d_w;
-    cudaMalloc(&d_w, numel * sizeof(__nv_bfloat16));
+    CK(cudaMalloc(&d_w, numel * sizeof(__nv_bfloat16)));
     if (!int8_pin) {
-        cudaMemcpy(d_w, find_tensor(st1, st2, name)->data, numel * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
+        CK(cudaMemcpy(d_w, need_tensor(st1, st2, name, "BF16", numel * sizeof(__nv_bfloat16))->data,
+                      numel * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice));
         return d_w;
     }
     char scale_name[300];
     snprintf(scale_name, sizeof(scale_name), "%s.int8_scale", name);
-    const TensorEntry *eq = safetensors_find(int8_pin, name);
-    const TensorEntry *es = safetensors_find(int8_pin, scale_name);
-    if (!eq || !es || eq->end - eq->begin != numel || es->end - es->begin != numel / INT8_BLOCK * sizeof(float)) {
-        printf("INT8 pin tensor %s missing or misshapen\n", name);
-        exit(1);
-    }
+    const TensorEntry *eq = need_tensor(int8_pin, NULL, name, "I8", numel);
+    const TensorEntry *es = need_tensor(int8_pin, NULL, scale_name, "F32", numel / INT8_BLOCK * sizeof(float));
     int8_t *d_q;
     float *d_s;
-    cudaMalloc(&d_q, numel);
-    cudaMalloc(&d_s, numel / INT8_BLOCK * sizeof(float));
-    cudaMemcpy(d_q, eq->data, numel, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_s, es->data, numel / INT8_BLOCK * sizeof(float), cudaMemcpyHostToDevice);
+    CK(cudaMalloc(&d_q, numel));
+    CK(cudaMalloc(&d_s, numel / INT8_BLOCK * sizeof(float)));
+    CK(cudaMemcpy(d_q, eq->data, numel, cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(d_s, es->data, numel / INT8_BLOCK * sizeof(float), cudaMemcpyHostToDevice));
     int8_block_dequant_kernel<<<(unsigned)((numel + 255) / 256), 256>>>(d_q, d_s, d_w, numel);
-    cudaDeviceSynchronize();
-    cudaFree(d_q);
-    cudaFree(d_s);
+    CK(cudaGetLastError());
+    CK(cudaDeviceSynchronize());
+    CK(cudaFree(d_q));
+    CK(cudaFree(d_s));
     return d_w;
 }
 
@@ -369,7 +452,7 @@ int main(int argc, char** argv) {
     }
     if (argc - argi != 2) {
         printf("usage: %s [--dump DIR] [--int8 PIN.safetensors] <model_snapshot_dir> <artifacts_dir>\n", argv[0]);
-        return 2;
+        return EXIT_USAGE;
     }
     const char* model_dir = argv[argi];
     const char* artifacts_dir = argv[argi + 1];
@@ -379,49 +462,58 @@ int main(int argc, char** argv) {
     printf("Arm (0) Full 32-Layer BF16 Evaluator (2048 Tokens)\n");
     printf("=========================================================\n");
 
-    // 1. Read token IDs
+    if (dump_dir && mkdir(dump_dir, 0755) != 0 && errno != EEXIST)
+        setup_fail("cannot create dump dir %s: %s", dump_dir, strerror(errno));
+
+    size_t meta_len, tokens_len, oracle_len;
+    snprintf(path, sizeof(path), "%s/hf_meta.json", artifacts_dir);
+    char* meta = read_file(path, &meta_len);
+    const double oracle_ppl = strtod(json_value(meta, "ppl"), NULL);
+    if (!(oracle_ppl > 1.0)) setup_fail("hf_meta.json ppl %f is not a perplexity", oracle_ppl);
+    char want_tokens_sha[65], want_top1_sha[65];
+    json_hex64(meta, "tokens_sha256", want_tokens_sha);
+    json_hex64(meta, "top1_sha256", want_top1_sha);
+
     snprintf(path, sizeof(path), "%s/eval_tokens_2048.txt", artifacts_dir);
-    FILE* ft = fopen(path, "r");
-    if (!ft) { printf("Cannot open eval_tokens_2048.txt\n"); return 1; }
+    char* tokens_txt = read_file(path, &tokens_len);
+    require_sha256(path, tokens_txt, tokens_len, want_tokens_sha, "tokens_sha256");
     int32_t tokens[2048];
+    const char* tp = tokens_txt;
     for (int i = 0; i < 2048; i++) {
-        if (fscanf(ft, "%d", &tokens[i]) != 1) { printf("Error reading token %d\n", i); return 1; }
+        char* end;
+        long v = strtol(tp, &end, 10);
+        if (end == tp) setup_fail("cannot parse token %d of %s", i, path);
+        tokens[i] = (int32_t)v;
+        tp = end;
     }
-    fclose(ft);
     printf("Read 2048 tokens successfully.\n");
 
-    // Read oracle reference top-1 predictions
     snprintf(path, sizeof(path), "%s/oracle_top1_2048.bin", artifacts_dir);
-    FILE* fo = fopen(path, "rb");
-    if (!fo) { printf("Cannot open oracle_top1_2048.bin\n"); return 1; }
+    char* oracle_bytes = read_file(path, &oracle_len);
+    if (oracle_len != 2047 * sizeof(uint32_t)) setup_fail("%s has %zu bytes, want %zu", path, oracle_len, 2047 * sizeof(uint32_t));
+    require_sha256(path, oracle_bytes, oracle_len, want_top1_sha, "top1_sha256");
     uint32_t oracle_top1[2047];
-    if (fread(oracle_top1, sizeof(uint32_t), 2047, fo) != 2047) {
-        printf("Error reading oracle_top1_2048.bin\n"); return 1;
-    }
-    fclose(fo);
-    printf("Read 2047 oracle reference top-1 tokens.\n");
+    memcpy(oracle_top1, oracle_bytes, sizeof(oracle_top1));
+    printf("Read 2047 oracle top-1 tokens; sha256 matches hf_meta.json (oracle ppl %.6f).\n", oracle_ppl);
 
     // 2. Open safetensors shards
     SafeTensors st1, st2;
     char p1[1024], p2[1024];
     snprintf(p1, sizeof(p1), "%s/model-00001-of-00002.safetensors", model_dir);
     snprintf(p2, sizeof(p2), "%s/model-00002-of-00002.safetensors", model_dir);
-    if (safetensors_open(&st1, p1) != 0 || safetensors_open(&st2, p2) != 0) {
-        printf("Cannot open safetensors shards\n"); return 1;
-    }
+    if (safetensors_open(&st1, p1) != 0 || safetensors_open(&st2, p2) != 0)
+        setup_fail("cannot open safetensors shards in %s", model_dir);
 
-    const TensorEntry* e_embed = find_tensor(&st1, &st2, "model.embed_tokens.weight");
-    const TensorEntry* e_final_norm = find_tensor(&st1, &st2, "model.norm.weight");
-    if (!e_embed || !e_final_norm) {
-        printf("Missing embed or final norm\n"); return 1;
-    }
+    const TensorEntry* e_embed = need_tensor(&st1, &st2, "model.embed_tokens.weight", "BF16",
+                                             (uint64_t)VOCAB_SIZE * HIDDEN_DIM * sizeof(__nv_bfloat16));
+    const TensorEntry* e_final_norm = need_tensor(&st1, &st2, "model.norm.weight", "BF16", HIDDEN_DIM * sizeof(__nv_bfloat16));
 
     const __nv_bfloat16* embed_table = (const __nv_bfloat16*)e_embed->data;
     __nv_bfloat16 *d_embed_tokens, *d_final_norm;
-    cudaMalloc(&d_embed_tokens, (size_t)VOCAB_SIZE * HIDDEN_DIM * sizeof(__nv_bfloat16));
-    cudaMalloc(&d_final_norm, HIDDEN_DIM * sizeof(__nv_bfloat16));
-    cudaMemcpy(d_embed_tokens, embed_table, (size_t)VOCAB_SIZE * HIDDEN_DIM * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_final_norm, e_final_norm->data, HIDDEN_DIM * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
+    CK(cudaMalloc(&d_embed_tokens, (size_t)VOCAB_SIZE * HIDDEN_DIM * sizeof(__nv_bfloat16)));
+    CK(cudaMalloc(&d_final_norm, HIDDEN_DIM * sizeof(__nv_bfloat16)));
+    CK(cudaMemcpy(d_embed_tokens, embed_table, (size_t)VOCAB_SIZE * HIDDEN_DIM * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(d_final_norm, e_final_norm->data, HIDDEN_DIM * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice));
 
     // Initial embed tokens on host -> copy to d_x
     float* h_x = (float*)malloc(2048 * HIDDEN_DIM * sizeof(float));
@@ -434,7 +526,7 @@ int main(int argc, char** argv) {
     SafeTensors st_int8;
     const SafeTensors* int8_pin = NULL;
     if (int8_pin_path) {
-        if (safetensors_open(&st_int8, int8_pin_path) != 0) { printf("Cannot open INT8 pin %s\n", int8_pin_path); return 1; }
+        if (safetensors_open(&st_int8, int8_pin_path) != 0) setup_fail("cannot open INT8 pin %s", int8_pin_path);
         int8_pin = &st_int8;
     }
 
@@ -442,12 +534,12 @@ int main(int argc, char** argv) {
     for (int l = 0; l < N_LAYERS; l++) {
         char name[256];
         snprintf(name, sizeof(name), "model.layers.%d.input_layernorm.weight", l);
-        cudaMalloc(&layers[l].d_input_norm, HIDDEN_DIM * sizeof(__nv_bfloat16));
-        cudaMemcpy(layers[l].d_input_norm, find_tensor(&st1, &st2, name)->data, HIDDEN_DIM * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
+        CK(cudaMalloc(&layers[l].d_input_norm, HIDDEN_DIM * sizeof(__nv_bfloat16)));
+        CK(cudaMemcpy(layers[l].d_input_norm, need_tensor(&st1, &st2, name, "BF16", HIDDEN_DIM * sizeof(__nv_bfloat16))->data, HIDDEN_DIM * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice));
 
         snprintf(name, sizeof(name), "model.layers.%d.post_attention_layernorm.weight", l);
-        cudaMalloc(&layers[l].d_post_norm, HIDDEN_DIM * sizeof(__nv_bfloat16));
-        cudaMemcpy(layers[l].d_post_norm, find_tensor(&st1, &st2, name)->data, HIDDEN_DIM * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
+        CK(cudaMalloc(&layers[l].d_post_norm, HIDDEN_DIM * sizeof(__nv_bfloat16)));
+        CK(cudaMemcpy(layers[l].d_post_norm, need_tensor(&st1, &st2, name, "BF16", HIDDEN_DIM * sizeof(__nv_bfloat16))->data, HIDDEN_DIM * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice));
 
         snprintf(name, sizeof(name), "model.layers.%d.self_attn.qkv_proj.weight", l);
         layers[l].d_qkv_w = upload_linear(&st1, &st2, int8_pin, name, (size_t)5120 * HIDDEN_DIM);
@@ -465,42 +557,42 @@ int main(int argc, char** argv) {
     float *d_gate_up, *d_act, *d_down;
     __nv_bfloat16 *d_h_bf16, *d_attn_out_bf16, *d_act_bf16, *d_x_final_bf16;
 
-    cudaMalloc(&d_x, 2048 * HIDDEN_DIM * sizeof(float));
-    cudaMalloc(&d_h, 2048 * HIDDEN_DIM * sizeof(float));
-    cudaMalloc(&d_h_bf16, 2048 * HIDDEN_DIM * sizeof(__nv_bfloat16));
-    cudaMalloc(&d_qkv, 2048 * 5120 * sizeof(float));
-    cudaMalloc(&d_q, 2048 * NUM_Q_HEADS * HEAD_DIM * sizeof(float));
-    cudaMalloc(&d_k, 2048 * NUM_KV_HEADS * HEAD_DIM * sizeof(float));
-    cudaMalloc(&d_v, 2048 * NUM_KV_HEADS * HEAD_DIM * sizeof(float));
-    cudaMalloc(&d_attn_out, 2048 * NUM_Q_HEADS * HEAD_DIM * sizeof(float));
-    cudaMalloc(&d_attn_out_bf16, 2048 * NUM_Q_HEADS * HEAD_DIM * sizeof(__nv_bfloat16));
-    cudaMalloc(&d_attn_proj, 2048 * HIDDEN_DIM * sizeof(float));
-    cudaMalloc(&d_gate_up, 2048 * (2 * INTERMEDIATE_DIM) * sizeof(float));
-    cudaMalloc(&d_act, 2048 * INTERMEDIATE_DIM * sizeof(float));
-    cudaMalloc(&d_act_bf16, 2048 * INTERMEDIATE_DIM * sizeof(__nv_bfloat16));
-    cudaMalloc(&d_down, 2048 * HIDDEN_DIM * sizeof(float));
-    cudaMalloc(&d_x_final_bf16, 2048 * HIDDEN_DIM * sizeof(__nv_bfloat16));
+    CK(cudaMalloc(&d_x, 2048 * HIDDEN_DIM * sizeof(float)));
+    CK(cudaMalloc(&d_h, 2048 * HIDDEN_DIM * sizeof(float)));
+    CK(cudaMalloc(&d_h_bf16, 2048 * HIDDEN_DIM * sizeof(__nv_bfloat16)));
+    CK(cudaMalloc(&d_qkv, 2048 * 5120 * sizeof(float)));
+    CK(cudaMalloc(&d_q, 2048 * NUM_Q_HEADS * HEAD_DIM * sizeof(float)));
+    CK(cudaMalloc(&d_k, 2048 * NUM_KV_HEADS * HEAD_DIM * sizeof(float)));
+    CK(cudaMalloc(&d_v, 2048 * NUM_KV_HEADS * HEAD_DIM * sizeof(float)));
+    CK(cudaMalloc(&d_attn_out, 2048 * NUM_Q_HEADS * HEAD_DIM * sizeof(float)));
+    CK(cudaMalloc(&d_attn_out_bf16, 2048 * NUM_Q_HEADS * HEAD_DIM * sizeof(__nv_bfloat16)));
+    CK(cudaMalloc(&d_attn_proj, 2048 * HIDDEN_DIM * sizeof(float)));
+    CK(cudaMalloc(&d_gate_up, 2048 * (2 * INTERMEDIATE_DIM) * sizeof(float)));
+    CK(cudaMalloc(&d_act, 2048 * INTERMEDIATE_DIM * sizeof(float)));
+    CK(cudaMalloc(&d_act_bf16, 2048 * INTERMEDIATE_DIM * sizeof(__nv_bfloat16)));
+    CK(cudaMalloc(&d_down, 2048 * HIDDEN_DIM * sizeof(float)));
+    CK(cudaMalloc(&d_x_final_bf16, 2048 * HIDDEN_DIM * sizeof(__nv_bfloat16)));
 
     // Target tokens & output buffers
     int32_t *d_targets, *d_top1;
     float *d_losses, *d_logits_chunk;
-    cudaMalloc(&d_targets, 2047 * sizeof(int32_t));
-    cudaMalloc(&d_top1, 2047 * sizeof(int32_t));
-    cudaMalloc(&d_losses, 2047 * sizeof(float));
-    cudaMalloc(&d_logits_chunk, 256 * VOCAB_SIZE * sizeof(float));
+    CK(cudaMalloc(&d_targets, 2047 * sizeof(int32_t)));
+    CK(cudaMalloc(&d_top1, 2047 * sizeof(int32_t)));
+    CK(cudaMalloc(&d_losses, 2047 * sizeof(float)));
+    CK(cudaMalloc(&d_logits_chunk, 256 * VOCAB_SIZE * sizeof(float)));
 
     int32_t h_targets[2047];
     for (int i = 0; i < 2047; i++) h_targets[i] = tokens[i + 1];
-    cudaMemcpy(d_targets, h_targets, 2047 * sizeof(int32_t), cudaMemcpyHostToDevice);
+    CK(cudaMemcpy(d_targets, h_targets, 2047 * sizeof(int32_t), cudaMemcpyHostToDevice));
 
     cublasHandle_t cublas;
-    cublasCreate(&cublas);
+    CKB(cublasCreate(&cublas));
     float alpha = 1.0f, beta = 0.0f;
 
     printf("Starting forward pass over 32 layers...\n");
     clock_t t0 = clock();
 
-    cudaMemcpy(d_x, h_x, 2048 * HIDDEN_DIM * sizeof(float), cudaMemcpyHostToDevice);
+    CK(cudaMemcpy(d_x, h_x, 2048 * HIDDEN_DIM * sizeof(float), cudaMemcpyHostToDevice));
 
     if (dump_dir) dump_rows(0, d_x);
     for (int l = 0; l < N_LAYERS; l++) {
@@ -508,11 +600,11 @@ int main(int argc, char** argv) {
         rms_norm_kernel<<<2048, 128>>>(d_x, layers[l].d_input_norm, d_h, d_h_bf16, 2048, HIDDEN_DIM, RMS_EPS);
 
         // 2. QKV GEMM
-        cublasGemmEx(cublas, CUBLAS_OP_T, CUBLAS_OP_N, 5120, 2048, HIDDEN_DIM,
+        CKB(cublasGemmEx(cublas, CUBLAS_OP_T, CUBLAS_OP_N, 5120, 2048, HIDDEN_DIM,
                      &alpha, layers[l].d_qkv_w, CUDA_R_16BF, HIDDEN_DIM,
                      d_h_bf16, CUDA_R_16BF, HIDDEN_DIM,
                      &beta, d_qkv, CUDA_R_32F, 5120,
-                     CUDA_R_32F, CUBLAS_GEMM_DEFAULT);
+                     CUDA_R_32F, CUBLAS_GEMM_DEFAULT));
 
         // 3. RoPE
         int total_el = 2048 * (NUM_Q_HEADS + 2 * NUM_KV_HEADS) * HEAD_DIM;
@@ -524,11 +616,11 @@ int main(int argc, char** argv) {
             d_q, d_k, d_v, d_attn_out, d_attn_out_bf16, 2048);
 
         // 5. O projection
-        cublasGemmEx(cublas, CUBLAS_OP_T, CUBLAS_OP_N, HIDDEN_DIM, 2048, HIDDEN_DIM,
+        CKB(cublasGemmEx(cublas, CUBLAS_OP_T, CUBLAS_OP_N, HIDDEN_DIM, 2048, HIDDEN_DIM,
                      &alpha, layers[l].d_o_w, CUDA_R_16BF, HIDDEN_DIM,
                      d_attn_out_bf16, CUDA_R_16BF, HIDDEN_DIM,
                      &beta, d_attn_proj, CUDA_R_32F, HIDDEN_DIM,
-                     CUDA_R_32F, CUBLAS_GEMM_DEFAULT);
+                     CUDA_R_32F, CUBLAS_GEMM_DEFAULT));
 
         // 6. Residual add 1
         residual_add_kernel<<<(2048 * HIDDEN_DIM + 255) / 256, 256>>>(d_x, d_attn_proj, 2048 * HIDDEN_DIM);
@@ -537,30 +629,32 @@ int main(int argc, char** argv) {
         rms_norm_kernel<<<2048, 128>>>(d_x, layers[l].d_post_norm, d_h, d_h_bf16, 2048, HIDDEN_DIM, RMS_EPS);
 
         // 8. GateUp GEMM
-        cublasGemmEx(cublas, CUBLAS_OP_T, CUBLAS_OP_N, 2 * INTERMEDIATE_DIM, 2048, HIDDEN_DIM,
+        CKB(cublasGemmEx(cublas, CUBLAS_OP_T, CUBLAS_OP_N, 2 * INTERMEDIATE_DIM, 2048, HIDDEN_DIM,
                      &alpha, layers[l].d_gate_up_w, CUDA_R_16BF, HIDDEN_DIM,
                      d_h_bf16, CUDA_R_16BF, HIDDEN_DIM,
                      &beta, d_gate_up, CUDA_R_32F, 2 * INTERMEDIATE_DIM,
-                     CUDA_R_32F, CUBLAS_GEMM_DEFAULT);
+                     CUDA_R_32F, CUBLAS_GEMM_DEFAULT));
 
         // 9. SwiGLU
         swiglu_kernel<<<(2048 * INTERMEDIATE_DIM + 255) / 256, 256>>>(d_gate_up, d_act, d_act_bf16, 2048);
 
         // 10. Down GEMM
-        cublasGemmEx(cublas, CUBLAS_OP_T, CUBLAS_OP_N, HIDDEN_DIM, 2048, INTERMEDIATE_DIM,
+        CKB(cublasGemmEx(cublas, CUBLAS_OP_T, CUBLAS_OP_N, HIDDEN_DIM, 2048, INTERMEDIATE_DIM,
                      &alpha, layers[l].d_down_w, CUDA_R_16BF, INTERMEDIATE_DIM,
                      d_act_bf16, CUDA_R_16BF, INTERMEDIATE_DIM,
                      &beta, d_down, CUDA_R_32F, HIDDEN_DIM,
-                     CUDA_R_32F, CUBLAS_GEMM_DEFAULT);
+                     CUDA_R_32F, CUBLAS_GEMM_DEFAULT));
 
         // 11. Residual add 2
         residual_add_kernel<<<(2048 * HIDDEN_DIM + 255) / 256, 256>>>(d_x, d_down, 2048 * HIDDEN_DIM);
+        CK(cudaGetLastError());
         if (dump_dir && l < N_LAYERS - 1) dump_rows(l + 1, d_x);
     }
 
     // Final RMSNorm
     rms_norm_kernel<<<2048, 128>>>(d_x, d_final_norm, d_h, d_x_final_bf16, 2048, HIDDEN_DIM, RMS_EPS);
-    cudaDeviceSynchronize();
+    CK(cudaGetLastError());
+    CK(cudaDeviceSynchronize());
 
     if (dump_dir) dump_rows(N_LAYERS, d_h);
 
@@ -568,16 +662,17 @@ int main(int argc, char** argv) {
     int chunk_size = 256;
     for (int offset = 0; offset < 2047; offset += chunk_size) {
         int cur_chunk = (offset + chunk_size <= 2047) ? chunk_size : (2047 - offset);
-        cublasGemmEx(cublas, CUBLAS_OP_T, CUBLAS_OP_N, VOCAB_SIZE, cur_chunk, HIDDEN_DIM,
+        CKB(cublasGemmEx(cublas, CUBLAS_OP_T, CUBLAS_OP_N, VOCAB_SIZE, cur_chunk, HIDDEN_DIM,
                      &alpha, d_embed_tokens, CUDA_R_16BF, HIDDEN_DIM,
                      d_x_final_bf16 + offset * HIDDEN_DIM, CUDA_R_16BF, HIDDEN_DIM,
                      &beta, d_logits_chunk, CUDA_R_32F, VOCAB_SIZE,
-                     CUDA_R_32F, CUBLAS_GEMM_DEFAULT);
+                     CUDA_R_32F, CUBLAS_GEMM_DEFAULT));
 
         compute_ce_and_argmax_kernel<<<cur_chunk, 256>>>(
             d_logits_chunk, d_targets + offset, d_losses + offset, d_top1 + offset, cur_chunk, VOCAB_SIZE);
+        CK(cudaGetLastError());
     }
-    cudaDeviceSynchronize();
+    CK(cudaDeviceSynchronize());
 
     clock_t t1 = clock();
     double total_sec = (double)(t1 - t0) / CLOCKS_PER_SEC;
@@ -585,22 +680,8 @@ int main(int argc, char** argv) {
     // Collect metrics
     float h_losses[2047];
     int32_t h_top1[2047];
-    cudaMemcpy(h_losses, d_losses, 2047 * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_top1, d_top1, 2047 * sizeof(int32_t), cudaMemcpyDeviceToHost);
-
-    if (dump_dir) {
-        snprintf(path, sizeof(path), "%s/cuda_hidden.bin", dump_dir);
-        FILE* fh = fopen(path, "wb");
-        if (!fh) { printf("Cannot write %s\n", path); return 1; }
-        fwrite(g_dump, sizeof(g_dump), 1, fh);
-        fclose(fh);
-        snprintf(path, sizeof(path), "%s/cuda_pos.bin", dump_dir);
-        FILE* fp = fopen(path, "wb");
-        if (!fp) { printf("Cannot write %s\n", path); return 1; }
-        fwrite(h_losses, sizeof(float), 2047, fp);
-        fwrite(h_top1, sizeof(int32_t), 2047, fp);
-        fclose(fp);
-    }
+    CK(cudaMemcpy(h_losses, d_losses, 2047 * sizeof(float), cudaMemcpyDeviceToHost));
+    CK(cudaMemcpy(h_top1, d_top1, 2047 * sizeof(int32_t), cudaMemcpyDeviceToHost));
 
     double total_ce = 0.0;
     int top1_matches = 0;
@@ -620,7 +701,6 @@ int main(int argc, char** argv) {
     double ppl = exp(mean_ce);
     double top1_acc = (double)top1_matches / 2047.0 * 100.0;
 
-    double oracle_ppl = 5.486957;
     double ppl_delta_pct = fabs(ppl - oracle_ppl) / oracle_ppl * 100.0;
 
     printf("\n=== %s Evaluation Results ===\n", int8_pin ? "INT8 pin" : "Arm (0) BF16");
@@ -635,10 +715,25 @@ int main(int argc, char** argv) {
     int pass = top1_acc >= 99.0 && ppl_delta_pct <= 1.0;
     if (int8_pin) printf("VERDICT: REPORT ONLY (INT8 pin %s, no gate)\n", int8_pin_path);
     else printf(pass ? "VERDICT: PASS (Gate 1 Anchor Verified)\n" : "VERDICT: FAIL (Gate 1 Anchor Mismatch)\n");
+    fflush(stdout);
+
+    if (dump_dir) {
+        snprintf(path, sizeof(path), "%s/cuda_hidden.bin", dump_dir);
+        FILE* fh = fopen(path, "wb");
+        if (!fh) setup_fail("cannot write %s", path);
+        fwrite(g_dump, sizeof(g_dump), 1, fh);
+        fclose(fh);
+        snprintf(path, sizeof(path), "%s/cuda_pos.bin", dump_dir);
+        FILE* fp = fopen(path, "wb");
+        if (!fp) setup_fail("cannot write %s", path);
+        fwrite(h_losses, sizeof(float), 2047, fp);
+        fwrite(h_top1, sizeof(int32_t), 2047, fp);
+        fclose(fp);
+    }
 
     safetensors_close(&st1);
     safetensors_close(&st2);
     cublasDestroy(cublas);
     free(h_x);
-    return (pass || int8_pin) ? 0 : 1;
+    return (pass || int8_pin) ? EXIT_GATE_PASS : EXIT_GATE_FAIL;
 }
