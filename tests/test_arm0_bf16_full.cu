@@ -115,7 +115,7 @@ int main(int argc, char** argv) {
     printf("Uploaded all 32 layers of %s weights to VRAM.\n", int8_pin ? "INT8-dequantized" : "BF16");
 
     CKB(cublasCreate(&lin.cublas));
-    arm0_forward(&model, ev.tokens, cublas_linear, &lin, lin.cublas, dump_dir ? g_dump : NULL, &g_result);
+    arm0_forward(&model, ev.tokens, cublas_linear, &lin, lin.cublas, dump_dir ? g_dump : NULL, NULL, &g_result);
     const float* h_losses = g_result.losses;
     const int32_t* h_top1 = g_result.top1;
     const uint32_t* oracle_top1 = ev.oracle_top1;

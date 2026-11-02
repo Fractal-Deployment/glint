@@ -320,6 +320,56 @@ __global__ void compute_ce_and_argmax_kernel(
     }
 }
 
+__device__ float block_reduce(float v, bool is_max) {
+    __shared__ float s_red[256];
+    s_red[threadIdx.x] = v;
+    __syncthreads();
+    for (int stride = blockDim.x / 2; stride > 0; stride /= 2) {
+        if (threadIdx.x < stride) {
+            float o = s_red[threadIdx.x + stride];
+            s_red[threadIdx.x] = is_max ? fmaxf(s_red[threadIdx.x], o) : s_red[threadIdx.x] + o;
+        }
+        __syncthreads();
+    }
+    float r = s_red[0];
+    __syncthreads();
+    return r;
+}
+
+/* KL(P_ref || Q) per row, both softmaxes in fp32 over the full vocab; Q reads the logits rounded to bf16
+ * as compute_ce_and_argmax_kernel does. */
+__global__ void kl_vs_ref_kernel(const float* __restrict__ logits, const __nv_bfloat16* __restrict__ ref,
+                                 float* __restrict__ kl, int vocab_size) {
+    const float* q = logits + (size_t)blockIdx.x * vocab_size;
+    const __nv_bfloat16* r = ref + (size_t)blockIdx.x * vocab_size;
+    float max_q = -1e30f, max_r = -1e30f;
+    for (int v = threadIdx.x; v < vocab_size; v += blockDim.x) {
+        max_q = fmaxf(max_q, bf16r(q[v]));
+        max_r = fmaxf(max_r, __bfloat162float(r[v]));
+    }
+    max_q = block_reduce(max_q, true);
+    max_r = block_reduce(max_r, true);
+    float sum_q = 0.0f, sum_r = 0.0f;
+    for (int v = threadIdx.x; v < vocab_size; v += blockDim.x) {
+        sum_q += expf(bf16r(q[v]) - max_q);
+        sum_r += expf(__bfloat162float(r[v]) - max_r);
+    }
+    float lse_q = max_q + logf(block_reduce(sum_q, false));
+    float lse_r = max_r + logf(block_reduce(sum_r, false));
+    float acc = 0.0f;
+    for (int v = threadIdx.x; v < vocab_size; v += blockDim.x) {
+        float lr = __bfloat162float(r[v]) - lse_r;
+        acc += expf(lr) * (lr - (bf16r(q[v]) - lse_q));
+    }
+    acc = block_reduce(acc, false);
+    if (threadIdx.x == 0) kl[blockIdx.x] = acc;
+}
+
+__global__ void to_bf16_kernel(const float* __restrict__ in, __nv_bfloat16* __restrict__ out, size_t n) {
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = __float2bfloat16(in[i]);
+}
+
 static const int DUMP_POS[] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     16, 80, 144, 208, 272, 336, 400, 464, 528, 592, 656, 720, 784, 848, 912, 976,
@@ -418,9 +468,19 @@ struct Arm0Model {
     __nv_bfloat16 *d_post_norm[N_LAYERS];
 };
 
+#define ARM0_MAX_REFS 2
+
+/* Host bf16 logits [2047][VOCAB_SIZE] for positions 0..2046. Each non-NULL kl_ref gets
+ * KL(reference || this forward) per position; save_logits gets this forward's logits rounded to bf16. */
+struct Arm0Refs {
+    const __nv_bfloat16 *kl_ref[ARM0_MAX_REFS];
+    __nv_bfloat16 *save_logits;
+};
+
 struct Arm0Result {
     float losses[2047];
     int32_t top1[2047];
+    float kl[ARM0_MAX_REFS][2047];
     double seconds;
 };
 
@@ -482,7 +542,8 @@ static void arm0_upload_model(const SafeTensors *st1, const SafeTensors *st2, Ar
 }
 
 static void arm0_forward(const Arm0Model *model, const int32_t tokens[2048], Arm0LinearFn linear, void *ctx,
-                         cublasHandle_t cublas, float (*dump)[N_DUMP][HIDDEN_DIM], Arm0Result *out) {
+                         cublasHandle_t cublas, float (*dump)[N_DUMP][HIDDEN_DIM], const Arm0Refs *refs,
+                         Arm0Result *out) {
     float *h_x = (float *)malloc(2048 * HIDDEN_DIM * sizeof(float));
     for (int t = 0; t < 2048; t++)
         for (int d = 0; d < HIDDEN_DIM; d++)
@@ -513,6 +574,13 @@ static void arm0_forward(const Arm0Model *model, const int32_t tokens[2048], Arm
     CK(cudaMalloc(&d_top1, 2047 * sizeof(int32_t)));
     CK(cudaMalloc(&d_losses, 2047 * sizeof(float)));
     CK(cudaMalloc(&d_logits_chunk, 256 * VOCAB_SIZE * sizeof(float)));
+    __nv_bfloat16 *d_bf16_chunk = NULL;
+    float *d_kl = NULL;
+    if (refs) {
+        CK(cudaMalloc(&d_bf16_chunk, 256 * (size_t)VOCAB_SIZE * sizeof(__nv_bfloat16)));
+        CK(cudaMalloc(&d_kl, ARM0_MAX_REFS * 2047 * sizeof(float)));
+        CK(cudaMemset(d_kl, 0, ARM0_MAX_REFS * 2047 * sizeof(float)));
+    }
     CK(cudaMemcpy(d_targets, tokens + 1, 2047 * sizeof(int32_t), cudaMemcpyHostToDevice));
     float alpha = 1.0f, beta = 0.0f;
 
@@ -549,12 +617,30 @@ static void arm0_forward(const Arm0Model *model, const int32_t tokens[2048], Arm
                          &beta, d_logits_chunk, CUDA_R_32F, VOCAB_SIZE, CUDA_R_32F, CUBLAS_GEMM_DEFAULT));
         compute_ce_and_argmax_kernel<<<cur, 256>>>(d_logits_chunk, d_targets + offset, d_losses + offset,
                                                    d_top1 + offset, cur, VOCAB_SIZE);
+        size_t chunk_bytes = (size_t)cur * VOCAB_SIZE * sizeof(__nv_bfloat16);
+        for (int r = 0; refs && r < ARM0_MAX_REFS; r++) {
+            if (!refs->kl_ref[r]) continue;
+            CK(cudaMemcpy(d_bf16_chunk, refs->kl_ref[r] + (size_t)offset * VOCAB_SIZE, chunk_bytes,
+                          cudaMemcpyHostToDevice));
+            kl_vs_ref_kernel<<<cur, 256>>>(d_logits_chunk, d_bf16_chunk, d_kl + r * 2047 + offset, VOCAB_SIZE);
+        }
+        if (refs && refs->save_logits) {
+            size_t n = (size_t)cur * VOCAB_SIZE;
+            to_bf16_kernel<<<(unsigned)((n + 255) / 256), 256>>>(d_logits_chunk, d_bf16_chunk, n);
+            CK(cudaMemcpy(refs->save_logits + (size_t)offset * VOCAB_SIZE, d_bf16_chunk, chunk_bytes,
+                          cudaMemcpyDeviceToHost));
+        }
         CK(cudaGetLastError());
     }
     CK(cudaDeviceSynchronize());
     out->seconds = (double)(clock() - t0) / CLOCKS_PER_SEC;
     CK(cudaMemcpy(out->losses, d_losses, 2047 * sizeof(float), cudaMemcpyDeviceToHost));
     CK(cudaMemcpy(out->top1, d_top1, 2047 * sizeof(int32_t), cudaMemcpyDeviceToHost));
+    if (refs) CK(cudaMemcpy(out->kl, d_kl, sizeof(out->kl), cudaMemcpyDeviceToHost));
+    void *bufs[] = {d_x, d_h, d_qkv, d_q, d_k, d_v, d_attn_out, d_attn_proj, d_gate_up, d_act, d_down, d_h_bf16,
+                    d_attn_out_bf16, d_act_bf16, d_x_final_bf16, d_targets, d_top1, d_losses, d_logits_chunk,
+                    d_bf16_chunk, d_kl};
+    for (void *b : bufs) CK(cudaFree(b));
     free(h_x);
 }
 
