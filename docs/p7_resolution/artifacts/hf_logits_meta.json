@@ -1,0 +1,16 @@
+{
+  "logits_file": "/mnt/spill/compile_scratch/p7-resolution/ref/hf_logits_2048.bf16",
+  "shape": [
+    2047,
+    200064
+  ],
+  "dtype": "bf16",
+  "sha256": "01daddbca397f5502b41179f745fac34cbb3dcefe972ea254a7fe4a5632dcd66",
+  "eval_tokens_sha256": "20c509255ea4d76f7a6603984af500775aa785858d5ac5719532d1f9f90424ad",
+  "calib_tokens": "corpus tokens 2048..4095",
+  "calib_tokens_sha256": "f34cbccfe1bca476f2255a8425c691e306830d2146df00662bf795c328f3e6c2",
+  "attn_implementation": "sdpa",
+  "transformers": "4.57.6",
+  "torch": "2.5.1+cu121",
+  "device": "NVIDIA GeForce RTX 3060"
+}
