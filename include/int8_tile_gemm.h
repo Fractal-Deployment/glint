@@ -26,4 +26,7 @@ typedef struct {
 cudaError_t int8_tile_gemm_bf16(const __nv_bfloat16 *x, Int8PinLinear w, float *y, int m,
                                 cudaStream_t stream);
 
+/* w_bf16[i] = bf16(q[i] * scale[i / 64]), the same rounding the tile GEMM applies. */
+cudaError_t int8_dequant_bf16(Int8PinLinear w, __nv_bfloat16 *w_bf16, cudaStream_t stream);
+
 #endif

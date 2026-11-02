@@ -3,6 +3,10 @@
 Usage: python p7_resolution_reference.py ARTIFACTS_DIR RESOLUTION_ARTIFACTS_DIR LOGITS_OUT [MODEL_DIR]
 The corpus is P7_CORPUS_PATH, by default /opt/models/science_log/SCIENCE_JOURNAL.md.
 
+With P7_EVAL_START=S (a multiple of 2048, at least 4096), the eval tokens are corpus tokens S..S+2047 instead,
+and the script writes the ruler for them rather than checking one: ARTIFACTS_DIR/eval_tokens_2048.txt,
+oracle_top1_2048.bin (the HF argmax) and hf_meta.json (ppl and the sha256 of both).
+
 Tokenizes the corpus the eval tokens came from and checks that its first 2048 tokens are
 ARTIFACTS_DIR/eval_tokens_2048.txt. Writes the next 2048 tokens, disjoint from the eval tokens, to
 RESOLUTION_ARTIFACTS_DIR/calib_tokens_2048.txt. Runs the BF16 model on the eval tokens and writes its
@@ -26,9 +30,17 @@ artifacts_dir, res_dir, logits_out = sys.argv[1], sys.argv[2], sys.argv[3]
 model_dir = sys.argv[4] if len(sys.argv) > 4 else MODEL_DIR
 os.makedirs(res_dir, exist_ok=True)
 
-eval_tokens = [int(t) for t in open(f"{artifacts_dir}/eval_tokens_2048.txt").read().split()]
+eval_start = int(os.environ.get("P7_EVAL_START", "0"))
+assert eval_start == 0 or (eval_start >= 4096 and eval_start % 2048 == 0), "P7_EVAL_START overlaps the calibration tokens"
 corpus_tokens = AutoTokenizer.from_pretrained(model_dir).encode(open(CORPUS_PATH, encoding="utf-8").read())
-assert corpus_tokens[:2048] == eval_tokens, "corpus tokenization does not reproduce eval_tokens_2048.txt"
+if eval_start:
+    os.makedirs(artifacts_dir, exist_ok=True)
+    eval_tokens = corpus_tokens[eval_start:eval_start + 2048]
+    assert len(eval_tokens) == 2048, f"corpus has {len(corpus_tokens)} tokens, need {eval_start + 2048}"
+    open(f"{artifacts_dir}/eval_tokens_2048.txt", "w").write(" ".join(str(t) for t in eval_tokens))
+else:
+    eval_tokens = [int(t) for t in open(f"{artifacts_dir}/eval_tokens_2048.txt").read().split()]
+    assert corpus_tokens[:2048] == eval_tokens, "corpus tokenization does not reproduce eval_tokens_2048.txt"
 calib = corpus_tokens[2048:4096]
 assert len(calib) == 2048, f"corpus has {len(corpus_tokens)} tokens, need 4096"
 open(f"{res_dir}/calib_tokens_2048.txt", "w").write(" ".join(str(t) for t in calib))
@@ -40,6 +52,22 @@ with torch.no_grad():
 assert logits.dtype == torch.bfloat16
 
 top1 = torch.argmax(logits, dim=-1).to(torch.int32).cpu().numpy().astype("<u4").tobytes()
+if eval_start:
+    open(f"{artifacts_dir}/oracle_top1_2048.bin", "wb").write(top1)
+    labels = torch.tensor(eval_tokens[1:], device="cuda")
+    ce = sum(float(torch.nn.functional.cross_entropy(logits[i:i + 256].float(), labels[i:i + 256], reduction="sum"))
+             for i in range(0, 2047, 256))
+    mean_loss = ce / 2047
+    ruler = {
+        "corpus": CORPUS_PATH,
+        "eval_tokens": f"corpus tokens {eval_start}..{eval_start + 2047}",
+        "tokens_sha256": hashlib.sha256(open(f"{artifacts_dir}/eval_tokens_2048.txt", "rb").read()).hexdigest(),
+        "top1_sha256": hashlib.sha256(top1).hexdigest(),
+        "mean_loss": mean_loss,
+        "ppl": float(torch.tensor(mean_loss).exp()),
+        "attn_implementation": model.config._attn_implementation,
+    }
+    json.dump(ruler, open(f"{artifacts_dir}/hf_meta.json", "w"), indent=2)
 oracle = open(f"{artifacts_dir}/oracle_top1_2048.bin", "rb").read()
 agree = sum(a == b for a, b in zip(memoryview(top1).cast("I"), memoryview(oracle).cast("I")))
 assert top1 == oracle, f"HF argmax agrees with oracle_top1_2048.bin on {agree}/2047 rows only"

@@ -164,6 +164,11 @@ __global__ void __launch_bounds__(THREADS) int8_tile_gemm_kernel(const __nv_bflo
     }
 }
 
+__global__ void dequant_kernel(Int8PinLinear w, __nv_bfloat16 *__restrict__ out, size_t numel) {
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < numel) out[i] = __float2bfloat16((float)w.q[i] * w.scale[i / INT8_PIN_BLOCK]);
+}
+
 }
 
 cudaError_t int8_tile_gemm_bf16(const __nv_bfloat16 *x, Int8PinLinear w, float *y, int m, cudaStream_t stream) {
@@ -176,5 +181,12 @@ cudaError_t int8_tile_gemm_bf16(const __nv_bfloat16 *x, Int8PinLinear w, float *
                    (uintptr_t)w.scale % 4 == 0;
     if (aligned) int8_tile_gemm_kernel<true><<<grid, THREADS, 0, stream>>>(x, w, y, m);
     else int8_tile_gemm_kernel<false><<<grid, THREADS, 0, stream>>>(x, w, y, m);
+    return cudaGetLastError();
+}
+
+cudaError_t int8_dequant_bf16(Int8PinLinear w, __nv_bfloat16 *w_bf16, cudaStream_t stream) {
+    if (w.n_out <= 0 || w.k_in <= 0 || !w.q || !w.scale || !w_bf16) return cudaErrorInvalidValue;
+    size_t numel = (size_t)w.n_out * w.k_in;
+    dequant_kernel<<<(unsigned)((numel + 255) / 256), 256, 0, stream>>>(w, w_bf16, numel);
     return cudaGetLastError();
 }

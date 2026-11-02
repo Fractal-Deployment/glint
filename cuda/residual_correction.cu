@@ -5,46 +5,55 @@ namespace {
 constexpr int SELECT_THREADS = 256;
 constexpr int SELECT_MAX_K = 8192;
 
-__device__ __forceinline__ int code_at(const uint8_t *row, int n) {
+__device__ __forceinline__ int code_at(const uint8_t *row, int n, int bits) {
+    if (bits == 8) return (int8_t)row[n];
     int b = row[n >> 1];
     int nib = (n & 1) ? (b >> 4) : (b & 15);
     return nib >= 8 ? nib - 16 : nib;
 }
 
-__device__ __forceinline__ int quantize_residual(float w, int8_t q, float s, ResidBuildStats *stats) {
-    float r = w - __bfloat162float(__float2bfloat16((float)q * s));
+__device__ __forceinline__ float resid_step(ResidLinear r) { return r.range / (float)((1 << (r.bits - 1)) - 1); }
+
+__device__ __forceinline__ float scale_at(ResidLinear r, int n, int k) {
+    return r.scale[((size_t)n * r.k_in + k) / RESID_SCALE_BLOCK];
+}
+
+__device__ __forceinline__ int quantize_residual(float w, float w_base, float s, ResidLinear r, ResidBuildStats *stats) {
     if (s == 0.0f) return 0;
-    float rel = fabsf(r / s);
-    atomicMax(&stats->max_rel_bits, __float_as_uint(rel));
-    float c = rintf(r / (s * RESID_STEP));
-    if (fabsf(c) > 7.0f) {
+    float res = w - w_base;
+    atomicMax(&stats->max_rel_bits, __float_as_uint(fabsf(res / s)));
+    float qmax = (float)((1 << (r.bits - 1)) - 1);
+    float c = rintf(res / (s * resid_step(r)));
+    if (fabsf(c) > qmax) {
         atomicAdd(&stats->clamped, 1ull);
-        c = fminf(fmaxf(c, -7.0f), 7.0f);
+        c = fminf(fmaxf(c, -qmax), qmax);
     }
     return (int)c;
 }
 
-__global__ void build_kernel(const __nv_bfloat16 *__restrict__ w, Int8PinLinear base, uint8_t *__restrict__ codes,
-                             ResidBuildStats *stats) {
+__global__ void build_kernel(const __nv_bfloat16 *__restrict__ w, const __nv_bfloat16 *__restrict__ w_base,
+                             ResidLinear r, uint8_t *__restrict__ codes, ResidBuildStats *stats) {
+    const int per_byte = 8 / r.bits, row_bytes = r.n_out / per_byte;
     size_t t = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    int half = base.n_out / 2;
-    if (t >= (size_t)base.k_in * half) return;
-    int k = (int)(t % base.k_in);
-    int p = (int)(t / base.k_in);
-    int nib[2];
-    for (int h = 0; h < 2; h++) {
-        size_t i = (size_t)(2 * p + h) * base.k_in + k;
-        nib[h] = quantize_residual(__bfloat162float(w[i]), base.q[i], base.scale[i / INT8_PIN_BLOCK], stats) & 15;
+    if (t >= (size_t)r.k_in * row_bytes) return;
+    int k = (int)(t % r.k_in);
+    int p = (int)(t / r.k_in);
+    unsigned byte = 0;
+    for (int h = 0; h < per_byte; h++) {
+        int n = per_byte * p + h;
+        size_t i = (size_t)n * r.k_in + k;
+        int c = quantize_residual(__bfloat162float(w[i]), __bfloat162float(w_base[i]), scale_at(r, n, k), r, stats);
+        byte |= ((unsigned)c & ((1u << r.bits) - 1)) << (h * r.bits);
     }
-    codes[(size_t)k * half + p] = (uint8_t)(nib[0] | (nib[1] << 4));
+    codes[(size_t)k * row_bytes + p] = (uint8_t)byte;
 }
 
-__global__ void col_norm_kernel(const uint8_t *__restrict__ codes, Int8PinLinear base, float *__restrict__ col_norm) {
+__global__ void col_norm_kernel(const uint8_t *__restrict__ codes, ResidLinear r, float *__restrict__ col_norm) {
     int k = blockIdx.x;
-    const uint8_t *row = codes + (size_t)k * (base.n_out / 2);
+    const uint8_t *row = codes + (size_t)k * r.n_out * r.bits / 8;
     float sum = 0.0f;
-    for (int n = threadIdx.x; n < base.n_out; n += blockDim.x) {
-        float v = base.scale[((size_t)n * base.k_in + k) / INT8_PIN_BLOCK] * (float)code_at(row, n) * RESID_STEP;
+    for (int n = threadIdx.x; n < r.n_out; n += blockDim.x) {
+        float v = scale_at(r, n, k) * (float)code_at(row, n, r.bits) * resid_step(r);
         sum += v * v;
     }
     __shared__ float s_sum[256];
@@ -136,14 +145,14 @@ __global__ void gather_kernel(const __nv_bfloat16 *__restrict__ x, int m, int k_
     xg[t] = x[row * k_in + chan[t % c]];
 }
 
-__global__ void dequant_kernel(ResidCols r, Int8PinLinear base, __nv_bfloat16 *__restrict__ rg) {
+__global__ void dequant_kernel(ResidCols cols, ResidLinear r, __nv_bfloat16 *__restrict__ rg) {
     size_t t = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (t >= (size_t)base.n_out * r.c) return;
-    int j = (int)(t % r.c);
-    int n = (int)(t / r.c);
-    int k = r.chan ? r.chan[j] : j;
-    float s = base.scale[((size_t)n * base.k_in + k) / INT8_PIN_BLOCK];
-    rg[t] = __float2bfloat16(s * (float)code_at(r.codes + (size_t)j * (base.n_out / 2), n) * RESID_STEP);
+    if (t >= (size_t)r.n_out * cols.c) return;
+    int j = (int)(t % cols.c);
+    int n = (int)(t / cols.c);
+    int k = cols.chan ? cols.chan[j] : j;
+    const uint8_t *row = cols.codes + (size_t)j * r.n_out * r.bits / 8;
+    rg[t] = __float2bfloat16(scale_at(r, n, k) * (float)code_at(row, n, r.bits) * resid_step(r));
 }
 
 __global__ void accumulate_abs_kernel(const __nv_bfloat16 *__restrict__ x, int m, int k_in, float *__restrict__ sum_abs) {
@@ -158,11 +167,12 @@ unsigned blocks_for(size_t n) { return (unsigned)((n + 255) / 256); }
 
 }
 
-cudaError_t resid_build(const __nv_bfloat16 *w, Int8PinLinear base, uint8_t *codes, float *col_norm,
-                        ResidBuildStats *stats, cudaStream_t stream) {
-    if (base.n_out % 2 != 0) return cudaErrorInvalidValue;
-    build_kernel<<<blocks_for((size_t)base.k_in * (base.n_out / 2)), 256, 0, stream>>>(w, base, codes, stats);
-    col_norm_kernel<<<base.k_in, 256, 0, stream>>>(codes, base, col_norm);
+cudaError_t resid_build(const __nv_bfloat16 *w, const __nv_bfloat16 *w_base, ResidLinear r, uint8_t *codes,
+                        float *col_norm, ResidBuildStats *stats, cudaStream_t stream) {
+    if ((r.bits != 4 && r.bits != 8) || (r.bits == 4 && r.n_out % 2 != 0)) return cudaErrorInvalidValue;
+    size_t bytes = resid_cols_bytes(r.k_in, r.n_out, r.bits);
+    build_kernel<<<blocks_for(bytes), 256, 0, stream>>>(w, w_base, r, codes, stats);
+    col_norm_kernel<<<r.k_in, 256, 0, stream>>>(codes, r, col_norm);
     return cudaGetLastError();
 }
 
@@ -179,9 +189,9 @@ cudaError_t resid_gather(const __nv_bfloat16 *x, int m, int k_in, const uint16_t
     return cudaGetLastError();
 }
 
-cudaError_t resid_dequant(ResidCols r, Int8PinLinear base, __nv_bfloat16 *rg, cudaStream_t stream) {
-    if (!r.chan && r.c != base.k_in) return cudaErrorInvalidValue;
-    dequant_kernel<<<blocks_for((size_t)base.n_out * r.c), 256, 0, stream>>>(r, base, rg);
+cudaError_t resid_dequant(ResidCols cols, ResidLinear r, __nv_bfloat16 *rg, cudaStream_t stream) {
+    if (!cols.chan && cols.c != r.k_in) return cudaErrorInvalidValue;
+    dequant_kernel<<<blocks_for((size_t)r.n_out * cols.c), 256, 0, stream>>>(cols, r, rg);
     return cudaGetLastError();
 }
 
