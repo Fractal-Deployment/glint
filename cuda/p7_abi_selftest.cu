@@ -140,3 +140,10 @@ extern "C" int p7_abi_selftest(char *msg, size_t msg_n) {
     if (st.total_h2d_bytes != (uint64_t)ST_LAYERS * blob) return -8;
     return 0;
 }
+
+/* Flat-argument entry for FFI callers (Mojo): no struct by value. Returns cudaError_t as int. */
+extern "C" int p7_int8_gemm_flat(const void *x_bf16, const void *q, const void *scale, int n_out, int k_in,
+                                 void *y, int m, void *xq, void *sx, void *stream) {
+    Int8MmaLinear w = {(const int8_t *)q, (const float *)scale, n_out, k_in};
+    return (int)int8_mma_gemm((const __nv_bfloat16 *)x_bf16, w, (float *)y, m, (int8_t *)xq, (float *)sx, (cudaStream_t)stream);
+}
