@@ -17,3 +17,21 @@ Do not read the lower PPL as better fidelity; top-1 is 2 tokens lower.
 Time: the layers take 8.05 s (CUDA INT8: 3.37 s, about 2.4x); the other ~26 s is the naive bf16 logits kernel (one thread per
 logit, no tiling) and the one-thread-per-row cross-entropy. Not optimized.
 Not checked: the oracle/token sha256 files (hf_meta.json) are read but not hash-verified in Mojo, and no KL against the BF16 anchor.
+
+## Plugs and resolution in the Mojo forward (same day)
+
+`mojo/p7_forward.mojo PIN MODEL_DIR ARTIFACTS [PLUG.safetensors|none] [resolve]`. Plug = the res4 file from `tools/plug_encode.c`
+on every layer, applied by the Mojo fused-plug kernel; resolution = the activation residual re-quantized and multiplied as a second
+accumulating pass (Mojo `quant_resid` + the GEMM `accum` flag). 2047 tokens, HF oracle PPL 5.486957.
+
+| Mojo arm | PPL | top-1 vs HF oracle | layers time |
+|---|---|---|---|
+| INT8 only | 5.481900 | 2001 (97.75%) | 8.05 s |
+| + plugs | 5.488495 | 2006 (97.997%) | 11.2 s |
+| + resolution | 5.484129 | 2013 (98.34%) | 10.1 s |
+| + plugs + resolution | 5.477230 | 2014 (98.39%) | 13.9 s |
+| CUDA INT8 + plugs + resolution (PR #46) | 5.476566 | 2016 (98.49%) | - |
+| BF16 CUDA anchor | 5.491616 | 2015 (98.44%) | - |
+
+Top-1 moves in the same direction and by about the same amount as the CUDA arms (plugs and resolution each add agreement; both together are
+within 0.1 point of the CUDA best and of the BF16 anchor). Single-run differences of a few tokens are inside the noise between implementations.
