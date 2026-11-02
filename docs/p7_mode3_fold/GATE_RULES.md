@@ -97,6 +97,13 @@ Every arm must report:
    - Arm (0) BF16 **perplexity** within $1.0\%$ of HuggingFace Oracle:
      $$\frac{|\text{PPL}(\text{Arm 0}) - \text{PPL}(\text{Oracle})|}{\text{PPL}(\text{Oracle})} \le 1.0\%$$
    - Failure to meet this gate **STOPS the run** to bisect layer-by-layer.
+
+   > **PROPOSED AMENDMENT (2026-11-02, not in force until the operator locks it).** The 99.0% top-1 line cannot be met by a correct implementation on these tokens: HF BF16 eager attention against HF BF16 sdpa (the oracle) agrees on 2020/2047 = 98.68% (LOG.md, Event 5). Replace the top-1 bullet with:
+   > - Arm (0) top-1 agreement with the oracle is at least the measured HF-vs-HF floor on the same tokens minus a pre-registered margin M (operator picks M; the floor is 98.68%, and Arm 0 now scores 98.44%, so any M under 0.24 points still fails it).
+   > - On positions where the oracle's top-1 logit leads its top-2 by more than 0.5, Arm 0 agrees with the oracle at 100% (currently 1746 of 2047 positions, 100%).
+   > - Report per-token KL(oracle || Arm 0) mean, p99 and max. No threshold until a HF-vs-HF KL floor is measured the same way.
+   >
+   > Post-hoc warning: the 98.68% floor and Arm 0's 98.44% were both seen before this wording was written, so M must be chosen on grounds other than "what passes". The margin-100% bullet and the KL report do not depend on that.
 2. **Transport Fidelity Gate (Line 112):**
    - Arm (iii) (prefetched) **must be 100% bit-identical** to Arm (iv) (resident) across all output logits (**0 bit differences**).
 3. **Fold Accuracy Gates vs BF16 and INT8 (Line 116):**
