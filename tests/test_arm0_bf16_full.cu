@@ -8,6 +8,7 @@
  */
 
 #include "arm0_forward.h"
+#include "act_map.h"
 
 #define INT8_BLOCK 64
 
@@ -52,6 +53,7 @@ struct CublasLinears {
 
 static void cublas_linear(void *ctx, int layer, Arm0Linear which, const __nv_bfloat16 *x, float *y, int m) {
     const CublasLinears *lin = (const CublasLinears *)ctx;
+    act_capture(layer, which, x, m);
     int n_out = ARM0_LINEAR[which].n_out, k_in = ARM0_LINEAR[which].k_in;
     float alpha = 1.0f, beta = 0.0f;
     CKB(cublasGemmEx(lin->cublas, CUBLAS_OP_T, CUBLAS_OP_N, n_out, m, k_in, &alpha, lin->w[layer][which], CUDA_R_16BF,
@@ -114,8 +116,11 @@ int main(int argc, char** argv) {
     }
     printf("Uploaded all 32 layers of %s weights to VRAM.\n", int8_pin ? "INT8-dequantized" : "BF16");
 
+    const char *act_map = getenv("ARM0_ACT_MAP");
+    act_map_init(act_map);
     CKB(cublasCreate(&lin.cublas));
     arm0_forward(&model, ev.tokens, cublas_linear, &lin, lin.cublas, dump_dir ? g_dump : NULL, &g_result);
+    act_map_write(act_map, int8_pin ? "BF16 cuBLAS (INT8-dequantized weights)" : "BF16 cuBLAS (original BF16 weights)");
     const float* h_losses = g_result.losses;
     const int32_t* h_top1 = g_result.top1;
     const uint32_t* oracle_top1 = ev.oracle_top1;
