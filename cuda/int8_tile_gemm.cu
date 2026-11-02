@@ -167,9 +167,9 @@ __global__ void __launch_bounds__(THREADS) int8_tile_gemm_kernel(const __nv_bflo
 }
 
 cudaError_t int8_tile_gemm_bf16(const __nv_bfloat16 *x, Int8PinLinear w, float *y, int m, cudaStream_t stream) {
-    if (m < 0 || w.n_out <= 0 || w.k_in <= 0 || !x || !w.q || !w.scale || !y) return cudaErrorInvalidValue;
     cudaError_t pending = cudaGetLastError();
     if (pending != cudaSuccess) return pending;
+    if (m < 0 || w.n_out <= 0 || w.k_in <= 0 || !x || !w.q || !w.scale || !y) return cudaErrorInvalidValue;
     if (m == 0) return cudaSuccess;
     dim3 grid((w.n_out + BN - 1) / BN, (m + BM - 1) / BM);
     bool aligned = w.k_in % 16 == 0 && (uintptr_t)x % 16 == 0 && (uintptr_t)w.q % 16 == 0 &&
