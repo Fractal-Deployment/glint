@@ -93,10 +93,15 @@ Every arm must report:
 
 ### C. Pre-Registered Pass / Fail / Inconclusive Bounds for Pass 2
 1. **Oracle Anchor Fidelity Gate (Line 105):**
-   - Arm (0) BF16 **top-1 token prediction agreement** with HuggingFace Oracle $\ge 99.0\%$.
+   - Arm (0) BF16 **top-1 token prediction agreement** with HuggingFace Oracle $\ge 95.0\%$ (amended 2026-11-02 from 99.0%; see below).
    - Arm (0) BF16 **perplexity** within $1.0\%$ of HuggingFace Oracle:
      $$\frac{|\text{PPL}(\text{Arm 0}) - \text{PPL}(\text{Oracle})|}{\text{PPL}(\text{Oracle})} \le 1.0\%$$
    - Failure to meet this gate **STOPS the run** to bisect layer-by-layer.
+
+   > **AMENDMENT (2026-11-02, operator-set threshold).** The original 99.0% line cannot be met by a correct implementation on these tokens: HF BF16 eager attention against HF BF16 sdpa (the oracle) agrees on 2020/2047 = 98.68% (LOG.md, Event 5). The operator sets the top-1 threshold at **95.0%** for every arm compared with the oracle, chosen as a bar a compressed path has to clear and then be optimized past, not as the level a correct BF16 reaches. Measured so far: Arm 0 BF16 98.44%; INT8 pin 97.85% (W8) and 97.85% (W8A8) against the oracle. NF4 has not been measured on this harness.
+   > - Arm top-1 agreement with the oracle >= **95.0%**.
+   > - Arm 0 (BF16 anchor) also agrees with the oracle at 100% on positions where the oracle's top-1 logit leads its top-2 by more than 0.5 (currently 1746 of 2047, 100%). This keeps the anchor honest, because 95% alone leaves 3.4 points of slack that a subtly wrong forward could hide in (the missing longrope factor scored 86.7%, which 95% does catch).
+   > - Report per-token KL(reference || arm) mean, p99, max for every arm. No KL threshold until a HF-vs-HF KL floor is measured the same way.
 2. **Transport Fidelity Gate (Line 112):**
    - Arm (iii) (prefetched) **must be 100% bit-identical** to Arm (iv) (resident) across all output logits (**0 bit differences**).
 3. **Fold Accuracy Gates vs BF16 and INT8 (Line 116):**
