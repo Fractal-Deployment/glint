@@ -156,7 +156,7 @@ __global__ void accumulate_abs_kernel(const __nv_bfloat16 *__restrict__ x, int m
 
 unsigned blocks_for(size_t n) { return (unsigned)((n + 255) / 256); }
 
-}  // namespace
+}
 
 cudaError_t resid_build(const __nv_bfloat16 *w, Int8PinLinear base, uint8_t *codes, float *col_norm,
                         ResidBuildStats *stats, cudaStream_t stream) {
