@@ -9,6 +9,8 @@
 
 #include "arm0_forward.h"
 #include "act_map.h"
+#include "nf4.h"
+#include <vector>
 
 #define INT8_BLOCK 64
 
@@ -18,13 +20,23 @@ __global__ void int8_block_dequant_kernel(const int8_t* __restrict__ q, const fl
     if (i < numel) out[i] = __float2bfloat16((float)q[i] * scale[i / INT8_BLOCK]);
 }
 
+static double g_nf4_se, g_nf4_ref2, g_nf4_max; static uint64_t g_nf4_n; static FILE *g_nf4_map; static int g_nf4_first;
 static __nv_bfloat16* upload_linear(const SafeTensors *st1, const SafeTensors *st2, const SafeTensors *int8_pin,
                                     const char *name, size_t numel) {
     __nv_bfloat16 *d_w;
     CK(cudaMalloc(&d_w, numel * sizeof(__nv_bfloat16)));
     if (!int8_pin) {
-        CK(cudaMemcpy(d_w, need_tensor(st1, st2, name, "BF16", numel * sizeof(__nv_bfloat16))->data,
-                      numel * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice));
+        const TensorEntry *e = need_tensor(st1, st2, name, "BF16", numel * sizeof(__nv_bfloat16));
+        if (getenv("ARM0_NF4")) { /* NF4 comparison point and S0-WMAP-NF4 */
+            std::vector<uint16_t> rt(numel);
+            double se = 0, ref2 = 0, mx = 0;
+            nf4_roundtrip((const uint16_t *)e->data, rt.data(), numel, &se, &ref2, &mx);
+            g_nf4_se += se; g_nf4_ref2 += ref2; g_nf4_n += numel; if (mx > g_nf4_max) g_nf4_max = mx;
+            if (g_nf4_map) fprintf(g_nf4_map, "%s{\"name\":\"%s\",\"rmse\":%.6e,\"max_abs\":%.6e,\"rel_l2\":%.6e}", g_nf4_first++ ? "," : "", name, sqrt(se / numel), mx, sqrt(se / ref2));
+            CK(cudaMemcpy(d_w, rt.data(), numel * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice));
+            return d_w;
+        }
+        CK(cudaMemcpy(d_w, e->data, numel * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice));
         return d_w;
     }
     char scale_name[300];
@@ -107,12 +119,20 @@ int main(int argc, char** argv) {
     }
 
     static CublasLinears lin;
+    if (getenv("ARM0_NF4") && getenv("ARM0_NF4_WMAP")) {
+        g_nf4_map = fopen(getenv("ARM0_NF4_WMAP"), "w");
+        if (g_nf4_map) fprintf(g_nf4_map, "{\"schema\":\"nf4_weight_diff_map_v1\",\"scheme\":\"NF4 blocksize 64 absmax, bf16 dequant\",\"tensors\":[");
+    }
     for (int l = 0; l < N_LAYERS; l++) {
         for (int j = 0; j < ARM0_N_LINEARS; j++) {
             char name[256];
             snprintf(name, sizeof(name), "model.layers.%d.%s.weight", l, ARM0_LINEAR[j].name);
             lin.w[l][j] = upload_linear(&st1, &st2, int8_pin, name, (size_t)ARM0_LINEAR[j].n_out * ARM0_LINEAR[j].k_in);
         }
+    }
+    if (getenv("ARM0_NF4")) {
+        printf("NF4 weights: %llu linear elems, RMSE %.6e, max abs %.6e, rel L2 %.6e\n", (unsigned long long)g_nf4_n, sqrt(g_nf4_se / g_nf4_n), g_nf4_max, sqrt(g_nf4_se / g_nf4_ref2));
+        if (g_nf4_map) { fprintf(g_nf4_map, "],\"n_elems\":%llu,\"rmse\":%.6e,\"max_abs\":%.6e,\"rel_l2\":%.6e}\n", (unsigned long long)g_nf4_n, sqrt(g_nf4_se / g_nf4_n), g_nf4_max, sqrt(g_nf4_se / g_nf4_ref2)); fclose(g_nf4_map); }
     }
     printf("Uploaded all 32 layers of %s weights to VRAM.\n", int8_pin ? "INT8-dequantized" : "BF16");
 
