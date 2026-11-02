@@ -11,7 +11,7 @@ int main(int argc, char **argv) {
     static const char *need[] = {"p7_abi_version", "p7_abi_selftest", "int8_mma_gemm", "glint_plug_streamer_create",
                                  "glint_plug_streamer_set_host_data", "glint_plug_streamer_start",
                                  "glint_plug_streamer_acquire", "glint_plug_streamer_release",
-                                 "glint_plug_streamer_get_stats", "glint_plug_streamer_destroy"};
+                                 "glint_plug_streamer_get_stats", "glint_plug_streamer_destroy", "p7_int8_gemm_flat"};
     for (unsigned i = 0; i < sizeof(need) / sizeof(need[0]); i++)
         if (!dlsym(h, need[i])) { fprintf(stderr, "HARD_BLOCK: missing symbol %s\n", need[i]); return 4; }
     const char *(*ver)(void) = (const char *(*)(void))dlsym(h, "p7_abi_version");
