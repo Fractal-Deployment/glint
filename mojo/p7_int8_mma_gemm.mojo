@@ -71,12 +71,14 @@ def pack4(p: Pointer[UInt32, MutUntrackedOrigin, address_space=AddressSpace.SHAR
     return p[unsafe_offset=off >> 2]
 
 def int8_mma_gemm[
-    xqo: ImmOrigin, sxo: ImmOrigin, wo: ImmOrigin, swo: ImmOrigin, yo: MutOrigin
+    PLUG: Bool, xqo: ImmOrigin, sxo: ImmOrigin, wo: ImmOrigin, swo: ImmOrigin, pqo: ImmOrigin, pso: ImmOrigin, yo: MutOrigin
 ](
     xq: ImmPointer[Int8, xqo],
     sx: ImmPointer[Float32, sxo],
     wq: ImmPointer[Int8, wo],
     sw: ImmPointer[Float32, swo],
+    pq: ImmPointer[UInt8, pqo],
+    ps: ImmPointer[Float32, pso],
     y: MutPointer[Float32, yo],
     m: Int32,
     n: Int32,
@@ -84,9 +86,11 @@ def int8_mma_gemm[
     var sAB = stack_allocation[(BM + BN) * SPAD, Int8, address_space=AddressSpace.SHARED]()
     var sA = sAB
     var sB = sAB.unsafe_offset(BM * SPAD)
-    var sSf = stack_allocation[BM + BN, Float32, address_space=AddressSpace.SHARED]()
+    var sP = stack_allocation[BN * SPAD, Int8, address_space=AddressSpace.SHARED]()
+    var sSf = stack_allocation[BM + BN + BN, Float32, address_space=AddressSpace.SHARED]()
     var sSx = sSf
     var sSw = sSf.unsafe_offset(BM)
+    var sSp = sSf.unsafe_offset(BM + BN)
     var tid = thread_idx.x
     var warp = tid >> 5
     var lane = tid & 31
@@ -120,9 +124,22 @@ def int8_mma_gemm[
             sSx[unsafe_offset=tid] = sx[unsafe_offset=(m0 + tid) * NKB + kb] if m0 + tid < mm else Float32(0)
         else:
             sSw[unsafe_offset=tid - BM] = sw[unsafe_offset=(n0 + tid - BM) * NKB + kb] if n0 + tid - BM < nn else Float32(0)
+        comptime if PLUG:
+            for i in range(tid, BN * 32, 128):
+                var r = i >> 5
+                var b = i & 31
+                var v = UInt8(0x88)
+                if n0 + r < nn:
+                    v = pq[unsafe_offset=(((n0 + r) * K + kb * 64) >> 1) + b]
+                sP[unsafe_offset=r * SPAD + 2 * b] = Int8(Int(v & 15) - 8)
+                sP[unsafe_offset=r * SPAD + 2 * b + 1] = Int8(Int(v >> 4) - 8)
+            if tid < BN:
+                sSp[unsafe_offset=tid] = ps[unsafe_offset=(n0 + tid) * NKB + kb] if n0 + tid < nn else Float32(0)
         barrier()
         var sA32f = sA.unsafe_bitcast[UInt32]()
         var sB32f = sB.unsafe_bitcast[UInt32]()
+        var sP32f = sP.unsafe_bitcast[UInt32]()
+        var ip = InlineArray[SIMD[DType.int32, 4], 8](fill=SIMD[DType.int32, 4](0))
         var ic = InlineArray[SIMD[DType.int32, 4], 8](fill=SIMD[DType.int32, 4](0))
         comptime for ks in range(2):
             var a0 = pack4(sA32f, (rb + g) * SPAD + ks * 32 + t * 4)
@@ -133,6 +150,10 @@ def int8_mma_gemm[
                 var b0 = pack4(sB32f, (nt * 8 + g) * SPAD + ks * 32 + t * 4)
                 var b1 = pack4(sB32f, (nt * 8 + g) * SPAD + ks * 32 + 16 + t * 4)
                 ic[nt] = mma_s8(a0, a1, a2, a3, b0, b1, ic[nt])
+                comptime if PLUG:
+                    var p0 = pack4(sP32f, (nt * 8 + g) * SPAD + ks * 32 + t * 4)
+                    var p1 = pack4(sP32f, (nt * 8 + g) * SPAD + ks * 32 + 16 + t * 4)
+                    ip[nt] = mma_s8(a0, a1, a2, a3, p0, p1, ip[nt])
         var x0 = sSx[unsafe_offset=rb + g]
         var x1 = sSx[unsafe_offset=rb + g + 8]
         comptime for nt in range(8):
@@ -143,6 +164,13 @@ def int8_mma_gemm[
             cur[1] += (Float32(ic[nt][1]) * x0) * w1
             cur[2] += (Float32(ic[nt][2]) * x1) * w0
             cur[3] += (Float32(ic[nt][3]) * x1) * w1
+            comptime if PLUG:
+                var q0 = sSp[unsafe_offset=nt * 8 + t * 2]
+                var q1 = sSp[unsafe_offset=nt * 8 + t * 2 + 1]
+                cur[0] += (Float32(ip[nt][0]) * x0) * q0
+                cur[1] += (Float32(ip[nt][1]) * x0) * q1
+                cur[2] += (Float32(ip[nt][2]) * x1) * q0
+                cur[3] += (Float32(ip[nt][3]) * x1) * q1
             acc[nt] = cur
         barrier()
     comptime for nt in range(8):
@@ -197,6 +225,21 @@ def main() raises:
     var y_m = ctx.enqueue_create_buffer[DType.float32](M * N)
     var yc_h = ctx.enqueue_create_host_buffer[DType.float32](M * N)
     var ym_h = ctx.enqueue_create_host_buffer[DType.float32](M * N)
+    var pqh = ctx.enqueue_create_host_buffer[DType.uint8](N * K // 2)
+    for i in range(N * K // 2):
+        seed = seed * 1664525 + 1013904223
+        pqh[i] = UInt8((seed >> 24) & 0xFF)
+    var psh = ctx.enqueue_create_host_buffer[DType.float32](N * NKB)
+    for i in range(N * NKB):
+        psh[i] = Float32(0.00002) * Float32(1 + i % 5)
+    var pq = ctx.enqueue_create_buffer[DType.uint8](N * K // 2)
+    var ps = ctx.enqueue_create_buffer[DType.float32](N * NKB)
+    ctx.enqueue_copy(dst_buf=pq, src_buf=pqh)
+    ctx.enqueue_copy(dst_buf=ps, src_buf=psh)
+    var y_cp = ctx.enqueue_create_buffer[DType.float32](M * N)
+    var y_mp = ctx.enqueue_create_buffer[DType.float32](M * N)
+    var ycp_h = ctx.enqueue_create_host_buffer[DType.float32](M * N)
+    var ymp_h = ctx.enqueue_create_host_buffer[DType.float32](M * N)
     ctx.synchronize()
 
     var rc = cuda_gemm(Int(x.unsafe_ptr()), Int(wq.unsafe_ptr()), Int(sw.unsafe_ptr()), Int32(N), Int32(K),
@@ -206,9 +249,9 @@ def main() raises:
     ks.synchronize()
 
     var qk = ctx.compile_function[quant_act[ImmUntrackedOrigin, MutUntrackedOrigin, MutUntrackedOrigin]]()
-    var gk = ctx.compile_function[int8_mma_gemm[ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
+    var gk = ctx.compile_function[int8_mma_gemm[False, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
     ctx.enqueue_function(qk, x, xq_m, sx_m, Int32(M * NKB), grid_dim=ceildiv(M * NKB, 64), block_dim=64)
-    ctx.enqueue_function(gk, xq_m, sx_m, wq, sw, y_m, Int32(M), Int32(N), grid_dim=(ceildiv(N, 64), ceildiv(M, 64)), block_dim=128)
+    ctx.enqueue_function(gk, xq_m, sx_m, wq, sw, pq, ps, y_m, Int32(M), Int32(N), grid_dim=(ceildiv(N, 64), ceildiv(M, 64)), block_dim=128)
     ctx.synchronize()
 
     ctx.enqueue_copy(dst_buf=yc_h, src_buf=y_c)
@@ -228,6 +271,32 @@ def main() raises:
         if abs(Float64(a)) > maxref:
             maxref = abs(Float64(a))
     print("outputs", M * N, "bitwise_different", bitdiff, "max_abs_diff", maxd, "max_abs_output", maxref)
+    # plug pass: CUDA fused plug vs Mojo fused plug, same inputs
+    var cuda_plug = lib.get_function[Int32]("p7_int8_gemm_plug_flat")
+    var rcp = cuda_plug(Int(x.unsafe_ptr()), Int(wq.unsafe_ptr()), Int(sw.unsafe_ptr()), Int(pq.unsafe_ptr()), Int(ps.unsafe_ptr()),
+                        Int32(N), Int32(K), Int(y_cp.unsafe_ptr()), Int32(M), Int(xq_c.unsafe_ptr()), Int(sx_c.unsafe_ptr()), Int(ks_native.value()))
+    if rcp != 0:
+        raise Error("cuda plug rc=" + String(rcp))
+    ks.synchronize()
+    var gp = ctx.compile_function[int8_mma_gemm[True, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
+    ctx.enqueue_function(gp, xq_m, sx_m, wq, sw, pq, ps, y_mp, Int32(M), Int32(N), grid_dim=(ceildiv(N, 64), ceildiv(M, 64)), block_dim=128)
+    ctx.synchronize()
+    ctx.enqueue_copy(dst_buf=ycp_h, src_buf=y_cp)
+    ctx.enqueue_copy(dst_buf=ymp_h, src_buf=y_mp)
+    ctx.synchronize()
+    var pdiff = 0
+    var pmax = Float64(0)
+    var pchg = 0
+    for i in range(M * N):
+        if ycp_h[i].to_bits[DType.uint32]() != ymp_h[i].to_bits[DType.uint32]():
+            pdiff += 1
+        var d = abs(Float64(ycp_h[i]) - Float64(ymp_h[i]))
+        if d > pmax:
+            pmax = d
+        if ymp_h[i].to_bits[DType.uint32]() != ym_h[i].to_bits[DType.uint32]():
+            pchg += 1
+    print("plug: outputs", M * N, "bitwise_different_vs_cuda", pdiff, "max_abs_diff", pmax, "outputs_changed_by_plug", pchg)
+    print("PURE_MOJO_PLUG_" + ("BITEXACT" if pdiff == 0 else "NEAR"))
     # timing: 20 runs each, synchronized
     var t0 = perf_counter_ns()
     for _ in range(20):
@@ -238,7 +307,7 @@ def main() raises:
     t0 = perf_counter_ns()
     for _ in range(20):
         ctx.enqueue_function(qk, x, xq_m, sx_m, Int32(M * NKB), grid_dim=ceildiv(M * NKB, 64), block_dim=64)
-        ctx.enqueue_function(gk, xq_m, sx_m, wq, sw, y_m, Int32(M), Int32(N), grid_dim=(ceildiv(N, 64), ceildiv(M, 64)), block_dim=128)
+        ctx.enqueue_function(gk, xq_m, sx_m, wq, sw, pq, ps, y_m, Int32(M), Int32(N), grid_dim=(ceildiv(N, 64), ceildiv(M, 64)), block_dim=128)
     ctx.synchronize()
     var mojo_ms = Float64(perf_counter_ns() - t0) / 1e6 / 20.0
     print("cuda_tensorcore_ms_per_gemm", cuda_ms, "pure_mojo_mma_ms_per_gemm", mojo_ms, "slowdown", mojo_ms / cuda_ms)
