@@ -1,6 +1,7 @@
 """HuggingFace BF16 references for the resolution arms (offline oracle only).
 
 Usage: python p7_resolution_reference.py ARTIFACTS_DIR RESOLUTION_ARTIFACTS_DIR LOGITS_OUT [MODEL_DIR]
+The corpus is P7_CORPUS_PATH, by default /opt/models/science_log/SCIENCE_JOURNAL.md.
 
 Tokenizes the corpus the eval tokens came from and checks that its first 2048 tokens are
 ARTIFACTS_DIR/eval_tokens_2048.txt. Writes the next 2048 tokens, disjoint from the eval tokens, to
@@ -18,7 +19,7 @@ import torch
 import transformers
 from transformers import AutoTokenizer, Phi3ForCausalLM
 
-CORPUS_PATH = "/opt/models/science_log/SCIENCE_JOURNAL.md"
+CORPUS_PATH = os.environ.get("P7_CORPUS_PATH", "/opt/models/science_log/SCIENCE_JOURNAL.md")
 MODEL_DIR = "/opt/models/.hf_cache/hub/models--microsoft--Phi-4-mini-instruct/snapshots/cfbefacb99257ffa30c83adab238a50856ac3083"
 
 artifacts_dir, res_dir, logits_out = sys.argv[1], sys.argv[2], sys.argv[3]
