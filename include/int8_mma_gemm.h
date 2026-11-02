@@ -46,6 +46,12 @@ cudaError_t int8_mma_gemm_plug(const __nv_bfloat16 *x, Int8MmaLinear w, const ui
                                const float *plug_scale, float *y, int m, int8_t *xq, float *sx,
                                int8_t *plug_i8, cudaStream_t stream);
 
+/* Fused late plug: same result as int8_mma_gemm_plug without the int8 scratch or the second pass; the
+ * plug's nibbles are unpacked in shared memory next to the base slice. */
+cudaError_t int8_mma_gemm_plug_fused(const __nv_bfloat16 *x, Int8MmaLinear w, const uint8_t *plug_q4,
+                                     const float *plug_scale, float *y, int m, int8_t *xq, float *sx,
+                                     cudaStream_t stream);
+
 /* Resolution: as int8_mma_gemm (optionally with a plug), plus the activation's own quantization residual
  * re-quantized and multiplied as a second pass (rq/sr: scratch the size of xq/sx). The plug pointers are
  * all NULL or all set. About twice the GEMM work. */
