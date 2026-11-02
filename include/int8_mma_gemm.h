@@ -38,6 +38,14 @@ static inline size_t int8_mma_sx_bytes(int m, int k_in) { return (size_t)m * (si
 cudaError_t int8_mma_gemm(const __nv_bfloat16 *x, Int8MmaLinear w, float *y, int m,
                           int8_t *xq, float *sx, cudaStream_t stream);
 
+/* Late plug: y = X * (base + plug)^T, where the plug is a p7_plug_res4_v1 slice for this linear
+ * (plug_q4: ceil(n_out*k_in/2) bytes, plug_scale: one F32 per 64 weights, the base's block order).
+ * The activation is quantized once and shared; the plug is unpacked into plug_i8 (n_out*k_in bytes of
+ * caller scratch) and added into y by a second accumulating pass. */
+cudaError_t int8_mma_gemm_plug(const __nv_bfloat16 *x, Int8MmaLinear w, const uint8_t *plug_q4,
+                               const float *plug_scale, float *y, int m, int8_t *xq, float *sx,
+                               int8_t *plug_i8, cudaStream_t stream);
+
 #ifdef __cplusplus
 }
 #endif
