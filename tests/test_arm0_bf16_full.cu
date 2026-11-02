@@ -10,6 +10,7 @@
 #include "arm0_forward.h"
 #include "act_map.h"
 #include "nf4.h"
+#include "../include/glint_htile.h"
 #include <vector>
 
 #define INT8_BLOCK 64
@@ -58,6 +59,25 @@ static __nv_bfloat16* upload_linear(const SafeTensors *st1, const SafeTensors *s
     return d_w;
 }
 
+/* --glint PINDIR [--hole-only]: linears through the H-TILE kernel on a glint_pin_v1 (hole + plug + absmax). */
+struct GlintLin { uint8_t *hole, *plug; float *am; };
+static int g_glint = 0, g_hole_only = 0;
+static GlintLin g_gl[N_LAYERS][ARM0_N_LINEARS];
+static uint8_t *g_zero_plug = NULL;
+static void glint_upload(const SafeTensors *a, const SafeTensors *b, int l, int j) {
+    size_t n = (size_t)ARM0_LINEAR[j].n_out * ARM0_LINEAR[j].k_in;
+    char nm[256], pn[300], an[300];
+    snprintf(nm, sizeof(nm), "model.layers.%d.%s.weight", l, ARM0_LINEAR[j].name);
+    snprintf(pn, sizeof(pn), "%s.glint_plug", nm); snprintf(an, sizeof(an), "%s.absmax", nm);
+    size_t nb = (n + 1) / 2, ab = (n + 63) / 64 * sizeof(float);
+    const TensorEntry *eh = need_tensor(a, b, nm, "U8", nb), *ep = need_tensor(a, b, pn, "U8", nb), *ea = need_tensor(a, b, an, "F32", ab);
+    GlintLin &g = g_gl[l][j];
+    CK(cudaMalloc(&g.hole, nb)); CK(cudaMemcpy(g.hole, eh->data, nb, cudaMemcpyHostToDevice));
+    CK(cudaMalloc(&g.am, ab)); CK(cudaMemcpy(g.am, ea->data, ab, cudaMemcpyHostToDevice));
+    if (g_hole_only) { if (!g_zero_plug) { CK(cudaMalloc(&g_zero_plug, 8192ull * 3072 / 2 * 2)); CK(cudaMemset(g_zero_plug, 0, 8192ull * 3072)); } g.plug = g_zero_plug; }
+    else { CK(cudaMalloc(&g.plug, nb)); CK(cudaMemcpy(g.plug, ep->data, nb, cudaMemcpyHostToDevice)); }
+}
+
 struct CublasLinears {
     cublasHandle_t cublas;
     __nv_bfloat16 *w[N_LAYERS][ARM0_N_LINEARS];
@@ -66,6 +86,12 @@ struct CublasLinears {
 static void cublas_linear(void *ctx, int layer, Arm0Linear which, const __nv_bfloat16 *x, float *y, int m) {
     const CublasLinears *lin = (const CublasLinears *)ctx;
     act_capture(layer, which, x, m);
+    if (g_glint) {
+        const GlintLin &g = g_gl[layer][which];
+        if (launch_glint_htile_s3_f32(g.hole, g.plug, g.am, x, y, m, ARM0_LINEAR[which].n_out, ARM0_LINEAR[which].k_in, 64) != 0)
+            setup_fail("htile launch failed layer %d", layer);
+        return;
+    }
     int n_out = ARM0_LINEAR[which].n_out, k_in = ARM0_LINEAR[which].k_in;
     float alpha = 1.0f, beta = 0.0f;
     CKB(cublasGemmEx(lin->cublas, CUBLAS_OP_T, CUBLAS_OP_N, n_out, m, k_in, &alpha, lin->w[layer][which], CUDA_R_16BF,
@@ -78,10 +104,13 @@ static float g_dump[N_LAYERS + 1][N_DUMP][HIDDEN_DIM];
 int main(int argc, char** argv) {
     const char* dump_dir = NULL;
     const char* int8_pin_path = NULL;
+    const char* glint_dir = NULL;
     int argi = 1;
     for (; argi + 1 < argc && argv[argi][0] == '-'; argi += 2) {
         if (strcmp(argv[argi], "--dump") == 0) dump_dir = argv[argi + 1];
         else if (strcmp(argv[argi], "--int8") == 0) int8_pin_path = argv[argi + 1];
+        else if (strcmp(argv[argi], "--glint") == 0) { glint_dir = argv[argi + 1]; g_glint = 1; }
+        else if (strcmp(argv[argi], "--glint-hole-only") == 0) { glint_dir = argv[argi + 1]; g_glint = 1; g_hole_only = 1; }
         else break;
     }
     if (argc - argi != 2) {
@@ -119,11 +148,20 @@ int main(int argc, char** argv) {
     }
 
     static CublasLinears lin;
+    SafeTensors gs1, gs2;
+    if (g_glint) {
+        char a[1024], b[1024];
+        snprintf(a, sizeof(a), "%s/model-00001-of-00002.safetensors", glint_dir);
+        snprintf(b, sizeof(b), "%s/model-00002-of-00002.safetensors", glint_dir);
+        if (safetensors_open(&gs1, a) != 0 || safetensors_open(&gs2, b) != 0) setup_fail("cannot open glint pin %s", glint_dir);
+        for (int l = 0; l < N_LAYERS; l++) for (int j = 0; j < ARM0_N_LINEARS; j++) glint_upload(&gs1, &gs2, l, j);
+        printf("Glint pin loaded (%s).\n", g_hole_only ? "hole only, plug zeroed" : "hole + plug");
+    }
     if (getenv("ARM0_NF4") && getenv("ARM0_NF4_WMAP")) {
         g_nf4_map = fopen(getenv("ARM0_NF4_WMAP"), "w");
         if (g_nf4_map) fprintf(g_nf4_map, "{\"schema\":\"nf4_weight_diff_map_v1\",\"scheme\":\"NF4 blocksize 64 absmax, bf16 dequant\",\"tensors\":[");
     }
-    for (int l = 0; l < N_LAYERS; l++) {
+    for (int l = 0; l < N_LAYERS && !g_glint; l++) {
         for (int j = 0; j < ARM0_N_LINEARS; j++) {
             char name[256];
             snprintf(name, sizeof(name), "model.layers.%d.%s.weight", l, ARM0_LINEAR[j].name);
@@ -176,7 +214,8 @@ int main(int argc, char** argv) {
     printf("Top-1 Agreement:        %.2f %%\n", top1_acc);
 
     int pass = top1_acc >= 95.0 && ppl_delta_pct <= 1.0;
-    if (int8_pin) printf("VERDICT: REPORT ONLY (INT8 pin %s, no gate)\n", int8_pin_path);
+    if (g_glint) printf("VERDICT: REPORT ONLY (glint %s)\n", g_hole_only ? "hole-only" : "hole+plug");
+    else if (int8_pin) printf("VERDICT: REPORT ONLY (INT8 pin %s, no gate)\n", int8_pin_path);
     else printf(pass ? "VERDICT: PASS (Gate 1 Anchor Verified)\n" : "VERDICT: FAIL (Gate 1 Anchor Mismatch)\n");
     fflush(stdout);
 
@@ -197,5 +236,5 @@ int main(int argc, char** argv) {
     safetensors_close(&st1);
     safetensors_close(&st2);
     cublasDestroy(lin.cublas);
-    return (pass || int8_pin) ? EXIT_GATE_PASS : EXIT_GATE_FAIL;
+    return (pass || int8_pin || g_glint) ? EXIT_GATE_PASS : EXIT_GATE_FAIL;
 }
