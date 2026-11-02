@@ -6,3 +6,6 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+
+# built by scripts/build_p7_kernels.sh
+lib/
