@@ -20,7 +20,9 @@ typedef struct {
 /* Y[m, n] = sum_k X[m, k] * bf16(q[n, k] * scale) for X bf16 [m, k_in] row-major
  * and Y fp32 [m, n_out] row-major. Each weight tile is unfolded to bf16 in
  * registers, rounded exactly as a bf16 dequant of the pin would be, and fed to
- * bf16 mma.sync with fp32 accumulate. */
+ * bf16 mma.sync with fp32 accumulate. Needs sm_80 or newer. An error already
+ * pending on the calling thread is returned, and cleared, without launching;
+ * an error returned after a launch is that launch's own. */
 cudaError_t int8_tile_gemm_bf16(const __nv_bfloat16 *x, Int8PinLinear w, float *y, int m,
                                 cudaStream_t stream);
 
