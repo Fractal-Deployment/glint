@@ -82,6 +82,7 @@ def int8_mma_gemm[
     y: MutPointer[Float32, yo],
     m: Int32,
     n: Int32,
+    kdim: Int32,
 ):
     var sAB = stack_allocation[(BM + BN) * SPAD, Int8, address_space=AddressSpace.SHARED]()
     var sA = sAB
@@ -97,6 +98,8 @@ def int8_mma_gemm[
     var g = lane >> 2
     var t = lane & 3
     var mm = Int(m)
+    var K = Int(kdim)
+    var NKB = K // 64
     var nn = Int(n)
     var m0 = block_idx.y * BM
     var n0 = block_idx.x * BN
@@ -251,7 +254,7 @@ def main() raises:
     var qk = ctx.compile_function[quant_act[ImmUntrackedOrigin, MutUntrackedOrigin, MutUntrackedOrigin]]()
     var gk = ctx.compile_function[int8_mma_gemm[False, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
     ctx.enqueue_function(qk, x, xq_m, sx_m, Int32(M * NKB), grid_dim=ceildiv(M * NKB, 64), block_dim=64)
-    ctx.enqueue_function(gk, xq_m, sx_m, wq, sw, pq, ps, y_m, Int32(M), Int32(N), grid_dim=(ceildiv(N, 64), ceildiv(M, 64)), block_dim=128)
+    ctx.enqueue_function(gk, xq_m, sx_m, wq, sw, pq, ps, y_m, Int32(M), Int32(N), Int32(K), grid_dim=(ceildiv(N, 64), ceildiv(M, 64)), block_dim=128)
     ctx.synchronize()
 
     ctx.enqueue_copy(dst_buf=yc_h, src_buf=y_c)
@@ -279,7 +282,7 @@ def main() raises:
         raise Error("cuda plug rc=" + String(rcp))
     ks.synchronize()
     var gp = ctx.compile_function[int8_mma_gemm[True, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
-    ctx.enqueue_function(gp, xq_m, sx_m, wq, sw, pq, ps, y_mp, Int32(M), Int32(N), grid_dim=(ceildiv(N, 64), ceildiv(M, 64)), block_dim=128)
+    ctx.enqueue_function(gp, xq_m, sx_m, wq, sw, pq, ps, y_mp, Int32(M), Int32(N), Int32(K), grid_dim=(ceildiv(N, 64), ceildiv(M, 64)), block_dim=128)
     ctx.synchronize()
     ctx.enqueue_copy(dst_buf=ycp_h, src_buf=y_cp)
     ctx.enqueue_copy(dst_buf=ymp_h, src_buf=y_mp)
@@ -307,7 +310,7 @@ def main() raises:
     t0 = perf_counter_ns()
     for _ in range(20):
         ctx.enqueue_function(qk, x, xq_m, sx_m, Int32(M * NKB), grid_dim=ceildiv(M * NKB, 64), block_dim=64)
-        ctx.enqueue_function(gk, xq_m, sx_m, wq, sw, pq, ps, y_m, Int32(M), Int32(N), grid_dim=(ceildiv(N, 64), ceildiv(M, 64)), block_dim=128)
+        ctx.enqueue_function(gk, xq_m, sx_m, wq, sw, pq, ps, y_m, Int32(M), Int32(N), Int32(K), grid_dim=(ceildiv(N, 64), ceildiv(M, 64)), block_dim=128)
     ctx.synchronize()
     var mojo_ms = Float64(perf_counter_ns() - t0) / 1e6 / 20.0
     print("cuda_tensorcore_ms_per_gemm", cuda_ms, "pure_mojo_mma_ms_per_gemm", mojo_ms, "slowdown", mojo_ms / cuda_ms)
