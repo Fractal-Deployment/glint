@@ -46,6 +46,11 @@ int main(int argc, char **argv) {
     CK(int8_mma_gemm_plug(dx, lin, dpq, dps, dy, M, dxq, dsx, dpi, 0)); CK(cudaMemcpy(yp.data(), dy, yp.size() * 4, cudaMemcpyDeviceToHost));
     CK(cudaMemset(dpi, 0x7f, n));
     CK(int8_mma_gemm_plug(dx, lin, dpq, dps, dy, M, dxq, dsx, dpi, 0)); CK(cudaMemcpy(yp2.data(), dy, yp2.size() * 4, cudaMemcpyDeviceToHost));
+    std::vector<float> yf(yb.size());
+    CK(int8_mma_gemm_plug_fused(dx, lin, dpq, dps, dy, M, dxq, dsx, 0)); CK(cudaMemcpy(yf.data(), dy, yf.size() * 4, cudaMemcpyDeviceToHost));
+    double fd = 0; long fmism = 0;
+    for (size_t i = 0; i < yf.size(); i++) { double d = fabs((double)yf[i] - yp[i]); if (d > fd) fd = d; fmism += memcmp(&yf[i], &yp[i], 4) != 0; }
+    printf("fused vs scratch two-pass: max|d|=%.3e, bitwise-different outputs=%ld of %zu\n", fd, fmism, yf.size());
     std::vector<int8_t> xq((size_t)M * K); std::vector<float> sx((size_t)M * (K / 64));
     CK(cudaMemcpy(xq.data(), dxq, xq.size(), cudaMemcpyDeviceToHost)); CK(cudaMemcpy(sx.data(), dsx, sx.size() * 4, cudaMemcpyDeviceToHost));
     const uint16_t *wb = (const uint16_t *)w->data; double eb = 0, ep = 0, ref2 = 0; long mism = 0;
@@ -56,6 +61,6 @@ int main(int argc, char **argv) {
     }
     for (size_t i = 0; i < yp.size(); i++) mism += memcmp(&yp[i], &yp2[i], 4) != 0;
     printf("tensor=%s base_rel=%.4e plug_rel=%.4e ratio=%.1fx poison_mismatches=%ld\n", argv[4], sqrt(eb / ref2), sqrt(ep / ref2), sqrt(eb / ep), mism);
-    int ok = sqrt(eb / ep) >= 5.0 && mism == 0;
+    int ok = sqrt(eb / ep) >= 5.0 && mism == 0 && fd < 1e-3;
     printf("%s\n", ok ? "PASS" : "FAIL"); return ok ? 0 : 1;
 }
