@@ -31,6 +31,16 @@
         }                                                                                     \
     } while (0)
 
+#define KCK(call)                                                                             \
+    do {                                                                                      \
+        cudaError_t e_ = (call);                                                              \
+        if (e_ != cudaSuccess) {                                                              \
+            printf("KERNEL ERROR: %s:%d %s: %s\nVERDICT: FAIL\n", __FILE__, __LINE__, #call,  \
+                   cudaGetErrorString(e_));                                                   \
+            exit(1);                                                                          \
+        }                                                                                     \
+    } while (0)
+
 static uint64_t g_rng = 0x9e3779b97f4a7c15ull;
 static uint32_t rnd(void) {
     g_rng = g_rng * 6364136223846793005ull + 1442695040888963407ull;
@@ -50,22 +60,23 @@ static __nv_bfloat16 *random_x(int m, int k) {
     return x;
 }
 
-static float *run_tile(const __nv_bfloat16 *h_x, const int8_t *h_q, const float *h_s, int m, int n, int k) {
+static float *run_tile(const __nv_bfloat16 *h_x, const int8_t *h_q, const float *h_s, int m, int n, int k, int x_off,
+                       int q_off) {
     size_t n_scale = ((size_t)n * k + INT8_PIN_BLOCK - 1) / INT8_PIN_BLOCK;
     __nv_bfloat16 *d_x;
     int8_t *d_q;
     float *d_s, *d_y;
-    CK(cudaMalloc(&d_x, (size_t)m * k * sizeof(__nv_bfloat16)));
-    CK(cudaMalloc(&d_q, (size_t)n * k));
+    CK(cudaMalloc(&d_x, ((size_t)m * k + x_off) * sizeof(__nv_bfloat16)));
+    CK(cudaMalloc(&d_q, (size_t)n * k + q_off));
     CK(cudaMalloc(&d_s, n_scale * sizeof(float)));
     CK(cudaMalloc(&d_y, (size_t)m * n * sizeof(float)));
-    CK(cudaMemcpy(d_x, h_x, (size_t)m * k * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice));
-    CK(cudaMemcpy(d_q, h_q, (size_t)n * k, cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(d_x + x_off, h_x, (size_t)m * k * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(d_q + q_off, h_q, (size_t)n * k, cudaMemcpyHostToDevice));
     CK(cudaMemcpy(d_s, h_s, n_scale * sizeof(float), cudaMemcpyHostToDevice));
     CK(cudaMemset(d_y, 0xff, (size_t)m * n * sizeof(float)));
-    Int8PinLinear w = {d_q, d_s, n, k};
-    CK(int8_tile_gemm_bf16(d_x, w, d_y, m, 0));
-    CK(cudaDeviceSynchronize());
+    Int8PinLinear w = {d_q + q_off, d_s, n, k};
+    KCK(int8_tile_gemm_bf16(d_x + x_off, w, d_y, m, 0));
+    KCK(cudaDeviceSynchronize());
     float *y = (float *)malloc((size_t)m * n * sizeof(float));
     CK(cudaMemcpy(y, d_y, (size_t)m * n * sizeof(float), cudaMemcpyDeviceToHost));
     CK(cudaFree(d_x));
@@ -76,8 +87,8 @@ static float *run_tile(const __nv_bfloat16 *h_x, const int8_t *h_q, const float 
 }
 
 static void check_vs_double(const char *label, const __nv_bfloat16 *x, const int8_t *q, const float *s,
-                            int m, int n, int k) {
-    float *y = run_tile(x, q, s, m, n, k);
+                            int m, int n, int k, int x_off = 0, int q_off = 0) {
+    float *y = run_tile(x, q, s, m, n, k, x_off, q_off);
     float *w = (float *)malloc((size_t)n * k * sizeof(float));
     for (size_t i = 0; i < (size_t)n * k; i++) w[i] = dequant(q, s, i);
     double worst = 0.0;
@@ -108,14 +119,14 @@ static void check_vs_double(const char *label, const __nv_bfloat16 *x, const int
     free(y);
 }
 
-static void synthetic_case(int m, int n, int k) {
+static void synthetic_case(const char *label, int m, int n, int k, int x_off = 0, int q_off = 0) {
     size_t n_scale = ((size_t)n * k + INT8_PIN_BLOCK - 1) / INT8_PIN_BLOCK;
     int8_t *q = (int8_t *)malloc((size_t)n * k);
     float *s = (float *)malloc(n_scale * sizeof(float));
     for (size_t i = 0; i < (size_t)n * k; i++) q[i] = (int8_t)((int)(rnd() % 255) - 127);
     for (size_t i = 0; i < n_scale; i++) s[i] = 1e-3f + 2e-2f * rnd_unit();
     __nv_bfloat16 *x = random_x(m, k);
-    check_vs_double("synthetic", x, q, s, m, n, k);
+    check_vs_double(label, x, q, s, m, n, k, x_off, q_off);
     free(q);
     free(s);
     free(x);
@@ -145,7 +156,7 @@ static void cublas_bf16(cublasHandle_t h, const __nv_bfloat16 *w, const __nv_bfl
 static void check_vs_cublas(const char *label, const __nv_bfloat16 *h_x, const int8_t *h_q, const float *h_s, int m,
                             int n, int k) {
     size_t numel = (size_t)n * k;
-    size_t n_scale = numel / INT8_PIN_BLOCK;
+    size_t n_scale = (numel + INT8_PIN_BLOCK - 1) / INT8_PIN_BLOCK;
     __nv_bfloat16 *d_x, *d_x_abs, *d_w, *d_w_abs;
     int8_t *d_q;
     float *d_s, *d_y_tile, *d_y_ref, *d_y_abs;
@@ -171,8 +182,8 @@ static void check_vs_cublas(const char *label, const __nv_bfloat16 *h_x, const i
     cublas_bf16(h, d_w, d_x, d_y_ref, m, n, k);
     cublas_bf16(h, d_w_abs, d_x_abs, d_y_abs, m, n, k);
     Int8PinLinear w = {d_q, d_s, n, k};
-    CK(int8_tile_gemm_bf16(d_x, w, d_y_tile, m, 0));
-    CK(cudaDeviceSynchronize());
+    KCK(int8_tile_gemm_bf16(d_x, w, d_y_tile, m, 0));
+    KCK(cudaDeviceSynchronize());
     CKB(cublasDestroy(h));
 
     size_t outs = (size_t)m * n;
@@ -228,6 +239,44 @@ static void pin_linear(const SafeTensors *st, const char *stem, const int8_t **q
     *s = (const float *)es->data;
 }
 
+static void check_pending_error_is_returned(void) {
+    int8_t q[16] = {};
+    float s = 1.0f;
+    __nv_bfloat16 x[16] = {};
+    float y = 0.0f;
+    __nv_bfloat16 *d_x;
+    int8_t *d_q;
+    float *d_s, *d_y;
+    CK(cudaMalloc(&d_x, sizeof(x)));
+    CK(cudaMalloc(&d_q, sizeof(q)));
+    CK(cudaMalloc(&d_s, sizeof(s)));
+    CK(cudaMalloc(&d_y, sizeof(y)));
+    CK(cudaMemcpy(d_x, x, sizeof(x), cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(d_q, q, sizeof(q), cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(d_s, &s, sizeof(s), cudaMemcpyHostToDevice));
+    float sentinel = 7.0f;
+    CK(cudaMemcpy(d_y, &sentinel, sizeof(y), cudaMemcpyHostToDevice));
+    Int8PinLinear w = {d_q, d_s, 1, 16};
+
+    void *huge;
+    cudaError_t provoked = cudaMalloc(&huge, (size_t)1 << 50);
+    cudaError_t first = int8_tile_gemm_bf16(d_x, w, d_y, 1, 0);
+    CK(cudaDeviceSynchronize());
+    CK(cudaMemcpy(&y, d_y, sizeof(y), cudaMemcpyDeviceToHost));
+    cudaError_t second = int8_tile_gemm_bf16(d_x, w, d_y, 1, 0);
+    KCK(cudaDeviceSynchronize());
+    float y_after = -1.0f;
+    CK(cudaMemcpy(&y_after, d_y, sizeof(y_after), cudaMemcpyDeviceToHost));
+    int ok = provoked != cudaSuccess && first == provoked && y == sentinel && second == cudaSuccess && y_after == 0.0f;
+    printf("%-44s returned %s then %s  %s\n", "pending error returned without launching", cudaGetErrorName(first),
+           cudaGetErrorName(second), ok ? "ok" : "FAIL");
+    if (!ok) g_failures++;
+    CK(cudaFree(d_x));
+    CK(cudaFree(d_q));
+    CK(cudaFree(d_s));
+    CK(cudaFree(d_y));
+}
+
 int main(int argc, char **argv) {
     int quick = 0;
     const char *pin_path = NULL;
@@ -242,13 +291,22 @@ int main(int argc, char **argv) {
 
     static const int ms[] = {1, 2, 3, 7, 16, 17, 63, 64, 65, 130};
     static const int ns[] = {1, 8, 63, 64, 65, 100, 129};
-    static const int ks[] = {1, 16, 37, 63, 64, 80, 129, 200, 1000};
+    static const int ks[] = {1, 16, 37, 63, 64, 80, 129, 200, 208, 1000, 1024, 1040};
     for (size_t a = 0; a < sizeof(ms) / sizeof(ms[0]); a++)
         for (size_t b = 0; b < sizeof(ns) / sizeof(ns[0]); b++)
             for (size_t c = 0; c < sizeof(ks) / sizeof(ks[0]); c++) {
                 if (quick && (a + b + c) % 7 != 0) continue;
-                synthetic_case(ms[a], ns[b], ks[c]);
+                synthetic_case("synthetic", ms[a], ns[b], ks[c]);
             }
+    static const int offs[][2] = {{1, 0}, {0, 1}, {1, 1}};
+    for (size_t i = 0; i < sizeof(offs) / sizeof(offs[0]); i++) {
+        char label[64];
+        snprintf(label, sizeof(label), "unaligned x+%d q+%d", offs[i][0], offs[i][1]);
+        synthetic_case(label, 17, 65, 208, offs[i][0], offs[i][1]);
+        synthetic_case(label, 130, 129, 1040, offs[i][0], offs[i][1]);
+    }
+
+    check_pending_error_is_returned();
 
     if (pin_path) {
         SafeTensors st;
