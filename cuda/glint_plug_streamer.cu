@@ -19,6 +19,7 @@ struct GlintPlugStreamer {
     cudaEvent_t stall_b[64];
     cudaEvent_t stall_e[64];
     cudaEvent_t slot_free[2];
+    int acquired_through;
     int released_through;
     GlintStreamerStats stats;
 };
@@ -71,6 +72,7 @@ extern "C" int glint_plug_streamer_create(
         }
     }
 
+    s->acquired_through = n_layers - 1;
     s->released_through = n_layers - 1;
     s->stats.n_layers = n_layers;
     *out = s;
@@ -116,7 +118,6 @@ extern "C" int glint_plug_streamer_start(GlintPlugStreamer *s) {
         return -6;
     if (cudaStreamWaitEvent(s->copy_stream, s->slot_free[0], 0) != cudaSuccess)
         return -5;
-    s->released_through = -1;
 
     /* Prefetch layer 0 into slot 0 */
     if (cudaEventRecord(s->h2d_b[0], s->copy_stream) != cudaSuccess)
@@ -127,6 +128,8 @@ extern "C" int glint_plug_streamer_start(GlintPlugStreamer *s) {
     if (cudaEventRecord(s->h2d_e[0], s->copy_stream) != cudaSuccess)
         return -4;
 
+    s->acquired_through = -1;
+    s->released_through = -1;
     s->stats.total_h2d_bytes += s->layer_bytes[0];
     return 0;
 }
@@ -169,6 +172,7 @@ extern "C" int glint_plug_streamer_acquire(
     if (cudaEventRecord(s->stall_e[layer], s->compute_stream) != cudaSuccess)
         return -8;
 
+    s->acquired_through = layer;
     *out_dev_plug = s->slot[cur_slot];
     return 0;
 }
@@ -176,6 +180,8 @@ extern "C" int glint_plug_streamer_acquire(
 extern "C" int glint_plug_streamer_release(GlintPlugStreamer *s, int layer) {
     if (!s || layer < 0 || layer >= s->n_layers)
         return -1;
+    if (layer != s->released_through + 1 || layer != s->acquired_through)
+        return -11;
     if (cudaEventRecord(s->slot_free[layer & 1], s->compute_stream) != cudaSuccess)
         return -2;
     s->released_through = layer;
