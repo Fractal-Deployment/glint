@@ -1,9 +1,10 @@
-/* Product 2 "resolution" arms over the INT8 pin: the base tile GEMM plus a 4-bit residual of the BF16 weights
- * held in pinned host RAM, added back for a chosen set of input channels. Every arm is scored against HF BF16 on
- * the ruler's 2048 tokens: perplexity, top-1 agreement and KL over the full vocabulary.
+/* Product 2 "resolution" arms over the INT8 or INT4 pin: the base tile GEMM plus a 4- or 8-bit residual of the
+ * BF16 weights held in pinned host RAM, added back for a chosen set of input channels. Every arm is scored against
+ * HF BF16 on the ruler's 2048 tokens: perplexity, top-1 agreement and KL over the full vocabulary.
  * KL is also taken against this C/CUDA forward run with the BF16 weights, which isolates the quantization error
  * from the forward's own distance to HF.
- * Usage: test_arm0_resolution PIN MODEL_DIR ARTIFACTS_DIR RES_ARTIFACTS_DIR HF_LOGITS OUT_TSV [FRAC...]
+ * Usage: test_arm0_resolution [--base int8|int4] [--resid-bits 4|8] PIN MODEL_DIR ARTIFACTS_DIR RES_ARTIFACTS_DIR
+ *        HF_LOGITS OUT_TSV [FRAC...]   (defaults: int8 base, 4-bit residual)
  * Exit: 0 report written and every streamed arm bitwise equal to its resident twin, 1 not equal, 2 usage, 3 setup. */
 #include <vector>
 #include <algorithm>
@@ -11,6 +12,7 @@
 
 #include "arm0_forward.h"
 #include "../include/int8_tile_gemm.h"
+#include "../include/int4_tile_gemm.h"
 #include "../include/residual_correction.h"
 #include "../include/glint_plug_streamer.h"
 
@@ -18,7 +20,9 @@ enum Mode { MODE_BASE, MODE_FULL, MODE_DYNAMIC, MODE_STATIC };
 enum Source { SRC_RESIDENT, SRC_STREAMED };
 
 struct LinearResid {
-    Int8PinLinear base;
+    Int8PinLinear b8;
+    Int4PinLinear b4;
+    ResidLinear res;
     uint8_t *h_codes;
     uint64_t codes_off;
     int col_off;
@@ -92,6 +96,8 @@ static std::vector<uint16_t> static_channels(const LinearResid &r, int c) {
     return sel;
 }
 
+static bool g_int4_base;
+static int g_resid_bits = 4;
 static size_t g_vram_at_start;
 
 /* Device memory in use now, less what was in use once the CUDA context existed and before this process
@@ -108,13 +114,13 @@ static int n_of(int j) { return ARM0_LINEAR[j].n_out; }
 static void resolution_linear(void *vctx, int layer, Arm0Linear which, const __nv_bfloat16 *x, float *y, int m) {
     Ctx *c = (Ctx *)vctx;
     LinearResid &r = c->r[layer][which];
-    CK(int8_tile_gemm_bf16(x, r.base, y, m, 0));
-    if (c->calib_abs) CK(resid_accumulate_abs(x, m, r.base.k_in, r.d_abs_sum, 0));
+    CK(g_int4_base ? int4_tile_gemm_bf16(x, r.b4, y, m, 0) : int8_tile_gemm_bf16(x, r.b8, y, m, 0));
+    if (c->calib_abs) CK(resid_accumulate_abs(x, m, r.res.k_in, r.d_abs_sum, 0));
     const Plan *p = c->plan;
     if (c->source == SRC_STREAMED && which == ARM0_QKV &&
         glint_plug_streamer_acquire(c->streamer, layer, &c->plug) != 0)
         setup_fail("streamer acquire layer %d", layer);
-    int ksel = p->ksel[layer][which], k_in = r.base.k_in, n_out = r.base.n_out;
+    int ksel = p->ksel[layer][which], k_in = r.res.k_in, n_out = r.res.n_out;
     size_t ny = (size_t)m * n_out;
     if (p->mode != MODE_BASE && ksel > 0) {
         CK(cudaMemset(c->d_yarm, 0, ny * sizeof(float)));
@@ -123,7 +129,7 @@ static void resolution_linear(void *vctx, int layer, Arm0Linear which, const __n
                                                          : r.d_codes;
         if (p->mode == MODE_STATIC) {
             CK(resid_gather(x, m, k_in, r.d_chan, ksel, c->d_xg, 0));
-            CK(resid_dequant(ResidCols{codes, r.d_chan, ksel}, r.base, c->d_rg, 0));
+            CK(resid_dequant(ResidCols{codes, r.d_chan, ksel}, r.res, c->d_rg, 0));
             CKB(resid_accumulate(c->cublas, c->d_xg, c->d_rg, c->d_yarm, m, n_out, ksel));
         } else {
             const __nv_bfloat16 *xs = x;
@@ -136,7 +142,7 @@ static void resolution_linear(void *vctx, int layer, Arm0Linear which, const __n
                 c->used_n++;
                 xs = c->d_xg;
             }
-            CK(resid_dequant(ResidCols{codes, NULL, k_in}, r.base, c->d_rg, 0));
+            CK(resid_dequant(ResidCols{codes, NULL, k_in}, r.res, c->d_rg, 0));
             CKB(resid_accumulate(c->cublas, xs, c->d_rg, c->d_yarm, m, n_out, k_in));
         }
         add_kernel<<<(unsigned)((ny + 255) / 256), 256>>>(y, c->d_yarm, ny);
@@ -145,7 +151,7 @@ static void resolution_linear(void *vctx, int layer, Arm0Linear which, const __n
     if (p->mode != MODE_BASE && p->mode != MODE_FULL && c->source == SRC_RESIDENT) {
         if (ksel == 0) CK(cudaMemset(c->d_yarm, 0, ny * sizeof(float)));
         CK(cudaMemset(c->d_yfull, 0, ny * sizeof(float)));
-        CK(resid_dequant(ResidCols{r.d_codes, NULL, k_in}, r.base, c->d_rg, 0));
+        CK(resid_dequant(ResidCols{r.d_codes, NULL, k_in}, r.res, c->d_rg, 0));
         CKB(resid_accumulate(c->cublas, x, c->d_rg, c->d_yfull, m, n_out, k_in));
         energy_kernel<<<256, 256>>>(c->d_yfull, c->d_yarm, ny, c->d_energy);
         CK(cudaGetLastError());
@@ -228,7 +234,7 @@ static uint64_t plan_bytes_per_token(const Plan &p) {
     for (int l = 0; l < N_LAYERS; l++)
         for (int j = 0; j < ARM0_N_LINEARS; j++) {
             int ksel = p.mode == MODE_FULL ? k_of(j) : p.ksel[l][j];
-            b += resid_cols_bytes(ksel, n_of(j)) + (p.mode == MODE_DYNAMIC ? 2ull * ksel : 0);
+            b += resid_cols_bytes(ksel, n_of(j), g_resid_bits) + (p.mode == MODE_DYNAMIC ? 2ull * ksel : 0);
         }
     return b;
 }
@@ -264,7 +270,7 @@ static Ctx g_ctx;
 static Arm0Eval g_eval;
 static int32_t g_calib[2048];
 typedef float Dump[N_LAYERS + 1][N_DUMP][HIDDEN_DIM];
-static Arm0Result g_res, g_resident[2], g_streamed[2];
+static Arm0Result g_res, g_bf16_res[2], g_resident[2], g_streamed[2];
 static Dump g_dump_a, g_dump_b, g_dump_resident[2], g_dump_streamed[2];
 
 static uint64_t g_codes_bytes;
@@ -302,7 +308,7 @@ static void codes_resident(bool on) {
     g_codes = dev_alloc<uint8_t>(g_codes_bytes);
     each_linear([](int, int, LinearResid &r) {
         r.d_codes = g_codes + r.codes_off;
-        CK(cudaMemcpy(r.d_codes, r.h_codes, resid_cols_bytes(r.base.k_in, r.base.n_out), cudaMemcpyHostToDevice));
+        CK(cudaMemcpy(r.d_codes, r.h_codes, resid_cols_bytes(r.res.k_in, r.res.n_out, r.res.bits), cudaMemcpyHostToDevice));
     });
 }
 
@@ -316,7 +322,7 @@ static void col_norm_resident(bool on) {
     g_col_norm = dev_alloc<float>((size_t)g_cols * sizeof(float));
     each_linear([](int, int, LinearResid &r) {
         r.d_col_norm = g_col_norm + r.col_off;
-        CK(cudaMemcpy(r.d_col_norm, r.col_norm.data(), r.base.k_in * sizeof(float), cudaMemcpyHostToDevice));
+        CK(cudaMemcpy(r.d_col_norm, r.col_norm.data(), r.res.k_in * sizeof(float), cudaMemcpyHostToDevice));
     });
 }
 
@@ -329,7 +335,7 @@ static void static_resident(const Plan *p, bool with_block) {
     size_t n_chan = 0, n_block = 0;
     each_linear([&](int l, int j, LinearResid &r) {
         n_chan += p->ksel[l][j];
-        n_block += p->ksel[l][j] * resid_cols_bytes(1, r.base.n_out);
+        n_block += p->ksel[l][j] * resid_cols_bytes(1, r.res.n_out, r.res.bits);
     });
     g_chan = dev_alloc<uint16_t>(n_chan * sizeof(uint16_t));
     if (with_block) g_block = dev_alloc<uint8_t>(n_block);
@@ -341,7 +347,7 @@ static void static_resident(const Plan *p, bool with_block) {
         CK(cudaMemcpy(r.d_chan, sel.data(), c * sizeof(uint16_t), cudaMemcpyHostToDevice));
         n_chan += c;
         if (!with_block) return;
-        uint64_t row = resid_cols_bytes(1, r.base.n_out);
+        uint64_t row = resid_cols_bytes(1, r.res.n_out, r.res.bits);
         std::vector<uint8_t> block(c * row);
         for (int i = 0; i < c; i++) memcpy(&block[i * row], r.h_codes + (size_t)sel[i] * row, row);
         r.d_block = g_block + n_block;
@@ -410,6 +416,19 @@ static void report(FILE *tsv, const Plan &p, const char *source, const Arm0Resul
     fflush(stdout);
 }
 
+/* Per-token KL against HF, arm a minus arm b, on the same eval tokens: the mean and its standard error over the
+ * 2047 positions. Neighbouring positions are correlated, so the standard error is a lower bound. */
+static void paired(const char *what, const Arm0Result &a, const Arm0Result &b) {
+    double sum = 0, sq = 0;
+    for (int i = 0; i < 2047; i++) {
+        double d = (double)a.kl[0][i] - b.kl[0][i];
+        sum += d;
+        sq += d * d;
+    }
+    double mean = sum / 2047, se = sqrt((sq / 2047 - mean * mean) / 2046);
+    printf("PAIRED %-40s mean dKL_hf %+.6f  se %.6f  mean/se %+.1f\n", what, mean, se, mean / se);
+}
+
 static bool same(const char *what, const Arm0Result &a, const Arm0Result &b, const void *da, const void *db,
                  size_t dump_bytes) {
     bool eq = memcmp(a.losses, b.losses, sizeof(a.losses)) == 0 && memcmp(a.top1, b.top1, sizeof(a.top1)) == 0 &&
@@ -432,6 +451,7 @@ static void run_bf16_and_keep_its_logits(const Arm0Model *model, const SafeTenso
     CK(cudaDeviceSynchronize());
     arm0_forward(model, g_eval.tokens, bf16_linear, ctx, *(cublasHandle_t *)&ctx[0], NULL, refs, &g_res);
     report(tsv, uniform_plan("bf16", 1.0, MODE_BASE, false), "resident", g_res, g_bf16_vram_in_run, 0, false);
+    g_bf16_res[0] = g_res;
     __nv_bfloat16 *saved = refs->save_logits;
     refs->kl_ref[1] = saved;
     refs->save_logits = NULL;
@@ -439,16 +459,32 @@ static void run_bf16_and_keep_its_logits(const Arm0Model *model, const SafeTenso
     arm0_forward(model, g_eval.tokens, bf16_linear, ctx, *(cublasHandle_t *)&ctx[0], NULL, refs, &g_res);
     g_reorder_k_sum = false;
     report(tsv, uniform_plan("bf16_splitk", 1.0, MODE_BASE, false), "resident", g_res, g_bf16_vram_in_run, 0);
+    g_bf16_res[1] = g_res;
     for (int i = 1; i <= N_LAYERS * ARM0_N_LINEARS; i++) CK(cudaFree(ctx[i]));
     cublasDestroy(*(cublasHandle_t *)&ctx[0]);
 }
 
 int main(int argc, char **argv) {
     int argi = 1;
-    if (argc - argi < 6) {
-        printf("usage: %s PIN MODEL_DIR ARTIFACTS_DIR RES_ARTIFACTS_DIR HF_LOGITS OUT_TSV [FRAC...]\n", argv[0]);
+    bool usage = false;
+    for (; argi + 1 < argc && strncmp(argv[argi], "--", 2) == 0; argi += 2) {
+        if (strcmp(argv[argi], "--base") == 0) {
+            g_int4_base = strcmp(argv[argi + 1], "int4") == 0;
+            usage |= !g_int4_base && strcmp(argv[argi + 1], "int8") != 0;
+        } else if (strcmp(argv[argi], "--resid-bits") == 0) {
+            g_resid_bits = atoi(argv[argi + 1]);
+            usage |= g_resid_bits != 4 && g_resid_bits != 8;
+        } else {
+            usage = true;
+        }
+    }
+    if (usage || argc - argi < 6) {
+        printf("usage: %s [--base int8|int4] [--resid-bits 4|8] PIN MODEL_DIR ARTIFACTS_DIR RES_ARTIFACTS_DIR HF_LOGITS "
+               "OUT_TSV [FRAC...]\n", argv[0]);
         return EXIT_USAGE;
     }
+    const char *base_name = g_int4_base ? "INT4" : "INT8";
+    const float resid_range = g_int4_base ? 0.55f : 1.0f;
     const char *pin_path = argv[argi], *model_dir = argv[argi + 1], *art = argv[argi + 2], *res_art = argv[argi + 3];
     const char *logits_path = argv[argi + 4], *tsv_path = argv[argi + 5];
     std::vector<double> fracs;
@@ -495,16 +531,17 @@ int main(int argc, char **argv) {
     CK(cudaDeviceSynchronize());
     printf("VRAM after embedding and norms: %.3f GiB\n", vram_used() / 1073741824.0);
     run_bf16_and_keep_its_logits(&model, &st1, &st2, &refs, tsv);
-    if (safetensors_open(&pin, pin_path) != 0) setup_fail("cannot open INT8 pin %s", pin_path);
+    if (safetensors_open(&pin, pin_path) != 0) setup_fail("cannot open %s pin %s", base_name, pin_path);
 
     __nv_bfloat16 *d_w = dev_alloc<__nv_bfloat16>((size_t)2 * INTERMEDIATE_DIM * HIDDEN_DIM * sizeof(__nv_bfloat16));
+    __nv_bfloat16 *d_wb = dev_alloc<__nv_bfloat16>((size_t)2 * INTERMEDIATE_DIM * HIDDEN_DIM * sizeof(__nv_bfloat16));
     ResidBuildStats *d_stats = dev_alloc<ResidBuildStats>(sizeof(ResidBuildStats));
     CK(cudaMemset(d_stats, 0, sizeof(ResidBuildStats)));
     uint64_t base_bytes = 0;
     each_linear([](int, int j, LinearResid &r) {
         r.codes_off = g_codes_bytes;
         r.col_off = g_cols;
-        g_codes_bytes += resid_cols_bytes(k_of(j), n_of(j));
+        g_codes_bytes += resid_cols_bytes(k_of(j), n_of(j), g_resid_bits);
         g_cols += k_of(j);
     });
     g_codes = dev_alloc<uint8_t>(g_codes_bytes);
@@ -514,22 +551,27 @@ int main(int argc, char **argv) {
         for (int j = 0; j < ARM0_N_LINEARS; j++) {
             LinearResid &r = g_ctx.r[l][j];
             int n = n_of(j), k = k_of(j);
-            size_t numel = (size_t)n * k, scale_bytes = numel / INT8_PIN_BLOCK * sizeof(float);
+            size_t numel = (size_t)n * k, scale_bytes = numel / RESID_SCALE_BLOCK * sizeof(float);
+            size_t q_bytes = g_int4_base ? numel / 2 : numel;
             char name[256], sname[300];
             weight_name(l, j, name, sizeof(name));
-            snprintf(sname, sizeof(sname), "%s.int8_scale", name);
-            int8_t *d_q = dev_alloc<int8_t>(numel);
+            snprintf(sname, sizeof(sname), "%s.%s", name, g_int4_base ? "int4_scale" : "int8_scale");
+            uint8_t *d_q = dev_alloc<uint8_t>(q_bytes);
             float *d_s = dev_alloc<float>(scale_bytes);
-            CK(cudaMemcpy(d_q, need_tensor(&pin, NULL, name, "I8", numel)->data, numel, cudaMemcpyHostToDevice));
+            CK(cudaMemcpy(d_q, need_tensor(&pin, NULL, name, g_int4_base ? "U8" : "I8", q_bytes)->data, q_bytes,
+                          cudaMemcpyHostToDevice));
             CK(cudaMemcpy(d_s, need_tensor(&pin, NULL, sname, "F32", scale_bytes)->data, scale_bytes,
                           cudaMemcpyHostToDevice));
             CK(cudaMemcpy(d_w, need_tensor(&st1, &st2, name, "BF16", numel * 2)->data, numel * 2, cudaMemcpyHostToDevice));
-            r.base = Int8PinLinear{d_q, d_s, n, k};
-            base_bytes += numel + scale_bytes;
-            uint64_t cb = resid_cols_bytes(k, n);
+            r.b8 = Int8PinLinear{(const int8_t *)d_q, d_s, n, k};
+            r.b4 = Int4PinLinear{d_q, d_s, n, k};
+            r.res = ResidLinear{d_s, n, k, g_resid_bits, resid_range};
+            CK(g_int4_base ? int4_dequant_bf16(r.b4, d_wb, 0) : int8_dequant_bf16(r.b8, d_wb, 0));
+            base_bytes += q_bytes + scale_bytes;
+            uint64_t cb = resid_cols_bytes(k, n, g_resid_bits);
             r.d_codes = g_codes + r.codes_off;
             r.d_col_norm = g_col_norm + r.col_off;
-            CK(resid_build(d_w, r.base, r.d_codes, r.d_col_norm, d_stats, 0));
+            CK(resid_build(d_w, d_wb, r.res, r.d_codes, r.d_col_norm, d_stats, 0));
             CK(cudaHostAlloc((void **)&r.h_codes, cb, cudaHostAllocDefault));
             CK(cudaMemcpy(r.h_codes, r.d_codes, cb, cudaMemcpyDeviceToHost));
             r.col_norm.resize(k);
@@ -537,22 +579,24 @@ int main(int argc, char **argv) {
         }
     size_t vram_base = vram_used() - vram_before_base;
     dev_free(d_w);
+    dev_free(d_wb);
     ResidBuildStats stats;
     CK(cudaMemcpy(&stats, d_stats, sizeof(stats), cudaMemcpyDeviceToHost));
     dev_free(d_stats);
     float max_rel;
     memcpy(&max_rel, &stats.max_rel_bits, 4);
-    printf("Residual built: %llu bytes pinned host (4 bits/weight over %llu weights), max |R/scale| %.4f, "
-           "clamped %llu. INT8 base linears %llu bytes resident.\n",
-           (unsigned long long)g_codes_bytes, (unsigned long long)(g_codes_bytes * 2), max_rel, stats.clamped,
-           (unsigned long long)base_bytes);
-    if (stats.clamped) setup_fail("%llu residuals fell outside the 4-bit range", stats.clamped);
-    printf("VRAM taken by the INT8 base linears (cudaMemGetInfo delta over their upload): %.3f GiB\n",
+    printf("Residual built: %llu bytes pinned host (%d bits/weight over %llu weights, codes over |R/scale| <= %.2f), "
+           "max |R/scale| %.4f, clamped %llu. %s base linears %llu bytes resident.\n",
+           (unsigned long long)g_codes_bytes, g_resid_bits, (unsigned long long)(g_codes_bytes * 8 / g_resid_bits),
+           resid_range, max_rel, stats.clamped, base_name, (unsigned long long)base_bytes);
+    if (stats.clamped) setup_fail("%llu residuals fell outside the code range", stats.clamped);
+    printf("VRAM taken by the %s base linears (cudaMemGetInfo delta over their upload): %.3f GiB\n", base_name,
            vram_base / 1073741824.0);
     codes_resident(false);
     col_norm_resident(false);
     CK(cudaDeviceSynchronize());
-    printf("VRAM with the model and the INT8 base resident, no residual: %.3f GiB\n", vram_used() / 1073741824.0);
+    printf("VRAM with the model and the %s base resident, no residual: %.3f GiB\n", base_name,
+           vram_used() / 1073741824.0);
 
     CKB(cublasCreate(&g_ctx.cublas));
 
@@ -589,7 +633,7 @@ int main(int argc, char **argv) {
     }
     each_linear([&](int, int, LinearResid &r) {
         const float *abs_sum = abs_sum_all.data() + r.col_off;
-        r.chan.resize(r.base.k_in);
+        r.chan.resize(r.res.k_in);
         std::iota(r.chan.begin(), r.chan.end(), 0);
         std::stable_sort(r.chan.begin(), r.chan.end(), [&](uint16_t a, uint16_t b) {
             return abs_sum[a] * r.col_norm[a] > abs_sum[b] * r.col_norm[b];
@@ -615,10 +659,20 @@ int main(int argc, char **argv) {
             if (t.ksel[l][ARM0_QKV] == 0) printf(" %d", l);
         printf("\n");
     }
-    for (const Plan &p : plans) {
-        arm_device_state(p, SRC_RESIDENT);
-        run(&model, g_eval.tokens, p, SRC_RESIDENT, NULL, ref, &g_res);
-        report(tsv, p, "resident", g_res, g_ctx.vram_in_run, 0);
+    std::vector<Arm0Result> results(plans.size());
+    for (size_t i = 0; i < plans.size(); i++) {
+        arm_device_state(plans[i], SRC_RESIDENT);
+        run(&model, g_eval.tokens, plans[i], SRC_RESIDENT, NULL, ref, &results[i]);
+        report(tsv, plans[i], "resident", results[i], g_ctx.vram_in_run, 0);
+    }
+    paired("bf16_splitk - bf16 (summation order only)", g_bf16_res[1], g_bf16_res[0]);
+    const size_t arms_per_frac = plans.size() / std::max<size_t>(fracs.size(), 1);
+    for (size_t i = 0; i < plans.size(); i++) {
+        size_t decdec = i - i % arms_per_frac;
+        if (i == decdec) continue;
+        char what[64];
+        snprintf(what, sizeof(what), "%s - decdec at frac %.2f", plans[i].arm, plans[i].frac);
+        paired(what, results[i], results[decdec]);
     }
     if (fracs.empty()) return EXIT_GATE_PASS;
 
@@ -640,12 +694,12 @@ int main(int argc, char **argv) {
         for (int l = 0; l < N_LAYERS; l++) {
             for (int j = 0; j < ARM0_N_LINEARS; j++) {
                 LinearResid &r = g_ctx.r[l][j];
-                uint64_t row = resid_cols_bytes(1, r.base.n_out);
+                uint64_t row = resid_cols_bytes(1, r.res.n_out, r.res.bits);
                 g_ctx.plug_off[l][j] = plugs[l].size();
                 if (p.mode == MODE_STATIC) {
                     for (uint16_t k : static_channels(r, p.ksel[l][j])) plugs[l].insert(plugs[l].end(), r.h_codes + k * row, r.h_codes + (k + 1) * row);
                 } else {
-                    plugs[l].insert(plugs[l].end(), r.h_codes, r.h_codes + r.base.k_in * row);
+                    plugs[l].insert(plugs[l].end(), r.h_codes, r.h_codes + r.res.k_in * row);
                 }
             }
             layer_bytes[l] = plugs[l].size();
