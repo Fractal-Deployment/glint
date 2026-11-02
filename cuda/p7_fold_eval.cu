@@ -38,6 +38,8 @@
 #define BLOCKSIZE 64
 #define RMS_EPS 1e-5f
 #define ATTENTION_SCALING 1.1902380714238083f
+#define ORIGINAL_MAX_POSITION 4096
+#define DECODE_STEPS 16
 
 /* NVML prototypes for dynamic loading */
 typedef void* nvmlDevice_t;
@@ -497,6 +499,11 @@ int main(int argc, char** argv) {
         fprintf(stderr, "HARD_BLOCK: expected 223 tokens, got %d\n", n_tokens);
         return 4;
     }
+    if (n_tokens + DECODE_STEPS > ORIGINAL_MAX_POSITION) {
+        fprintf(stderr, "HARD_BLOCK: positions up to %d need the longrope long_factor, which RoPE here omits\n",
+                n_tokens + DECODE_STEPS - 1);
+        return 4;
+    }
 
     int32_t *d_tokens, *d_targets;
     cudaMalloc(&d_tokens, n_tokens * sizeof(int32_t));
@@ -731,7 +738,7 @@ int main(int argc, char** argv) {
 
         /* Decode 16 steps */
         cudaEventRecord(ev0, compute_stream);
-        for (int step = 0; step < 16; step++) {
+        for (int step = 0; step < DECODE_STEPS; step++) {
             embed_lookup_kernel<<<dim3((HIDDEN_DIM + 255) / 256, 1), 256, 0, compute_stream>>>(
                 d_tokens + n_tokens - 1, shared.d_embed_tokens, d_x, NULL, 1, HIDDEN_DIM);
             for (int l = 0; l < N_LAYERS; l++) {
@@ -922,7 +929,7 @@ int main(int argc, char** argv) {
 
         /* Decode 16 steps */
         cudaEventRecord(ev0, compute_stream);
-        for (int step = 0; step < 16; step++) {
+        for (int step = 0; step < DECODE_STEPS; step++) {
             embed_lookup_kernel<<<dim3((HIDDEN_DIM + 255) / 256, 1), 256, 0, compute_stream>>>(
                 d_tokens + n_tokens - 1, shared.d_embed_tokens, d_x, d_x_bf16, 1, HIDDEN_DIM);
             for (int l = 0; l < N_LAYERS; l++) {
@@ -1063,7 +1070,7 @@ int main(int argc, char** argv) {
 
         /* Decode 16 steps with streaming */
         cudaEventRecord(ev0, compute_stream);
-        for (int step = 0; step < 16; step++) {
+        for (int step = 0; step < DECODE_STEPS; step++) {
             p7_plug_streamer_reset_stats(streamer);
             p7_plug_streamer_start(streamer);
             embed_lookup_kernel<<<dim3((HIDDEN_DIM + 255) / 256, 1), 256, 0, compute_stream>>>(
@@ -1199,7 +1206,7 @@ int main(int argc, char** argv) {
 
         /* Decode 16 steps */
         cudaEventRecord(ev0, compute_stream);
-        for (int step = 0; step < 16; step++) {
+        for (int step = 0; step < DECODE_STEPS; step++) {
             embed_lookup_kernel<<<dim3((HIDDEN_DIM + 255) / 256, 1), 256, 0, compute_stream>>>(
                 d_tokens + n_tokens - 1, shared.d_embed_tokens, d_x, d_x_bf16, 1, HIDDEN_DIM);
             for (int l = 0; l < N_LAYERS; l++) {
