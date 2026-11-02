@@ -1,8 +1,10 @@
 #include "arm0_forward.h"
+#include <vector>
 #include "../include/int8_tile_gemm.h"
 #include "../include/int8_mma_gemm.h"
+#include "../include/glint_plug_streamer.h"
 
-enum GemmPath { GEMM_TILE, GEMM_CUBLAS_DEQUANT, GEMM_MMA_W8A8 };
+enum GemmPath { GEMM_TILE, GEMM_CUBLAS_DEQUANT, GEMM_MMA_W8A8, GEMM_MMA_STREAM };
 
 __global__ void dequant_bf16_kernel(const int8_t *q, const float *s, __nv_bfloat16 *w, size_t numel) {
     size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
@@ -17,7 +19,23 @@ struct PinLinears {
     size_t weight_bytes;
     int8_t *xq;
     float *sx;
+    GlintPlugStreamer *streamer;
+    uint64_t off_q[ARM0_N_LINEARS], off_s[ARM0_N_LINEARS];
+    const uint8_t *slot;
 };
+
+static uint64_t align256(uint64_t v) { return (v + 255) & ~255ull; }
+
+/* One layer blob = the 4 linears' q bytes then scales, each 256-aligned; identical layout for every layer. */
+static uint64_t stream_layout(PinLinears *lin) {
+    uint64_t off = 0;
+    for (int j = 0; j < ARM0_N_LINEARS; j++) {
+        uint64_t numel = (uint64_t)ARM0_LINEAR[j].n_out * ARM0_LINEAR[j].k_in;
+        lin->off_q[j] = off; off = align256(off + numel);
+        lin->off_s[j] = off; off = align256(off + numel / INT8_PIN_BLOCK * sizeof(float));
+    }
+    return off;
+}
 
 static void load_linear(PinLinears *lin, const SafeTensors *pin, int layer, Arm0Linear which) {
     int n_out = ARM0_LINEAR[which].n_out, k_in = ARM0_LINEAR[which].k_in;
@@ -54,6 +72,15 @@ static void pin_linear(void *ctx, int layer, Arm0Linear which, const __nv_bfloat
         CK(int8_tile_gemm_bf16(x, lin->packed[layer][which], y, m, 0));
         return;
     }
+    if (lin->path == GEMM_MMA_STREAM) {
+        PinLinears *w = (PinLinears *)ctx;
+        if (which == ARM0_QKV && glint_plug_streamer_acquire(w->streamer, layer, &w->slot) != 0) setup_fail("acquire layer %d", layer);
+        Int8MmaLinear l = {(const int8_t *)(w->slot + w->off_q[which]), (const float *)(w->slot + w->off_s[which]),
+                           ARM0_LINEAR[which].n_out, ARM0_LINEAR[which].k_in};
+        CK(int8_mma_gemm(x, l, y, m, w->xq, w->sx, 0));
+        if (which == ARM0_DOWN && glint_plug_streamer_release(w->streamer, layer) != 0) setup_fail("release layer %d", layer);
+        return;
+    }
     if (lin->path == GEMM_MMA_W8A8) {
         const Int8PinLinear &p = lin->packed[layer][which];
         Int8MmaLinear w = {p.q, p.scale, p.n_out, p.k_in};
@@ -84,16 +111,17 @@ int main(int argc, char **argv) {
         if (strcmp(argv[argi + 1], "tile") == 0) path = GEMM_TILE;
         else if (strcmp(argv[argi + 1], "cublas") == 0) path = GEMM_CUBLAS_DEQUANT;
         else if (strcmp(argv[argi + 1], "mma") == 0) path = GEMM_MMA_W8A8;
+        else if (strcmp(argv[argi + 1], "mma-stream") == 0) path = GEMM_MMA_STREAM;
         else argi = argc;
         argi += 2;
     }
     if (argc - argi != 3) {
-        printf("usage: %s [--gemm tile|cublas|mma] PIN.safetensors <model_snapshot_dir> <artifacts_dir>\n", argv[0]);
+        printf("usage: %s [--gemm tile|cublas|mma|mma-stream] PIN.safetensors <model_snapshot_dir> <artifacts_dir>\n", argv[0]);
         return EXIT_USAGE;
     }
     const char *pin_path = argv[argi];
     const char *model_dir = argv[argi + 1];
-    const char *path_name = path == GEMM_TILE ? "INT8 tile GEMM (packed resident)" : path == GEMM_MMA_W8A8 ? "INT8 tensor-core W8A8 (packed resident)" : "INT8 dequant-to-BF16 + cuBLAS";
+    const char *path_name = path == GEMM_TILE ? "INT8 tile GEMM (packed resident)" : path == GEMM_MMA_STREAM ? "INT8 tensor-core W8A8 (streamed from pinned RAM, 2-slot ring)" : path == GEMM_MMA_W8A8 ? "INT8 tensor-core W8A8 (packed resident)" : "INT8 dequant-to-BF16 + cuBLAS";
 
     arm0_read_eval(argv[argi + 2], &g_eval);
 
@@ -110,12 +138,38 @@ int main(int argc, char **argv) {
     CK(cudaDeviceSynchronize());
     size_t used_before_linears = vram_used();
     g_lin.path = path;
-    if (path == GEMM_MMA_W8A8) {
+    if (path == GEMM_MMA_W8A8 || path == GEMM_MMA_STREAM) {
         int kmax = 0;
         for (int j = 0; j < ARM0_N_LINEARS; j++) kmax = ARM0_LINEAR[j].k_in > kmax ? ARM0_LINEAR[j].k_in : kmax;
         CK(cudaMalloc(&g_lin.xq, int8_mma_xq_bytes(2048, kmax)));
         CK(cudaMalloc(&g_lin.sx, int8_mma_sx_bytes(2048, kmax)));
     }
+    cudaStream_t copy_stream = 0;
+    if (path == GEMM_MMA_STREAM) {
+        uint64_t blob = stream_layout(&g_lin);
+        std::vector<uint64_t> lb(N_LAYERS, blob);
+        CK(cudaStreamCreateWithFlags(&copy_stream, cudaStreamNonBlocking));
+        if (glint_plug_streamer_create(&g_lin.streamer, N_LAYERS, lb.data(), copy_stream, 0) != 0) setup_fail("streamer create");
+        uint8_t *tmp = (uint8_t *)malloc(blob);
+        for (int l = 0; l < N_LAYERS; l++) {
+            memset(tmp, 0, blob);
+            for (int j = 0; j < ARM0_N_LINEARS; j++) {
+                size_t numel = (size_t)ARM0_LINEAR[j].n_out * ARM0_LINEAR[j].k_in;
+                size_t scale_bytes = numel / INT8_PIN_BLOCK * sizeof(float);
+                char name[256], scale_name[300];
+                snprintf(name, sizeof(name), "model.layers.%d.%s.weight", l, ARM0_LINEAR[j].name);
+                snprintf(scale_name, sizeof(scale_name), "%s.int8_scale", name);
+                const TensorEntry *eq = need_tensor(&pin, NULL, name, "I8", numel);
+                const TensorEntry *es = need_tensor(&pin, NULL, scale_name, "F32", scale_bytes);
+                memcpy(tmp + g_lin.off_q[j], eq->data, numel);
+                memcpy(tmp + g_lin.off_s[j], es->data, scale_bytes);
+            }
+            if (glint_plug_streamer_set_host_data(g_lin.streamer, l, tmp, blob) != 0) setup_fail("set_host_data %d", l);
+        }
+        free(tmp);
+        g_lin.weight_bytes = 2 * blob;
+        if (glint_plug_streamer_start(g_lin.streamer) != 0) setup_fail("streamer start");
+    } else
     for (int l = 0; l < N_LAYERS; l++)
         for (int j = 0; j < ARM0_N_LINEARS; j++) load_linear(&g_lin, &pin, l, (Arm0Linear)j);
     CK(cudaDeviceSynchronize());
@@ -128,6 +182,11 @@ int main(int argc, char **argv) {
     CKB(cublasCreate(&g_lin.cublas));
     arm0_forward(&model, g_eval.tokens, pin_linear, &g_lin, g_lin.cublas, NULL, &g_result);
     size_t used_peak = vram_used();
+    if (path == GEMM_MMA_STREAM) {
+        GlintStreamerStats ss;
+        glint_plug_streamer_get_stats(g_lin.streamer, &ss);
+        printf("Streamed bytes: %llu | stall total: %.3f ms (layer0 %.3f ms)\n", (unsigned long long)ss.total_h2d_bytes, ss.total_stall_ms, ss.per_layer_stall_ms[0]);
+    }
 
     double total_ce = 0.0;
     int top1_matches = 0;
