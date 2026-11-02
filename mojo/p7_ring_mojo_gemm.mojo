@@ -70,7 +70,7 @@ def main() raises:
         res_s.append(e^)
     ctx.synchronize()
     for l in range(LAYERS):
-        ks.enqueue_function(gk, xq, sx, res_q[l], res_s[l], dummy_p, dummy_s, y, Int32(M), Int32(N),
+        ks.enqueue_function(gk, xq, sx, res_q[l], res_s[l], dummy_p, dummy_s, y, Int32(M), Int32(N), Int32(K),
                             grid_dim=(ceildiv(N, 64), ceildiv(M, 64)), block_dim=128)
         ks.synchronize()
         ctx.enqueue_copy(dst_buf=yh, src_buf=y)
@@ -105,10 +105,10 @@ def main() raises:
             ctx.stream().record_event(copy_done[l + 1])
         ks.enqueue_wait_for(copy_done[l])
         if l % 2 == 0:
-            ks.enqueue_function(gk, xq, sx, q0, s0, dummy_p, dummy_s, y, Int32(M), Int32(N),
+            ks.enqueue_function(gk, xq, sx, q0, s0, dummy_p, dummy_s, y, Int32(M), Int32(N), Int32(K),
                                 grid_dim=(ceildiv(N, 64), ceildiv(M, 64)), block_dim=128)
         else:
-            ks.enqueue_function(gk, xq, sx, q1, s1, dummy_p, dummy_s, y, Int32(M), Int32(N),
+            ks.enqueue_function(gk, xq, sx, q1, s1, dummy_p, dummy_s, y, Int32(M), Int32(N), Int32(K),
                                 grid_dim=(ceildiv(N, 64), ceildiv(M, 64)), block_dim=128)
         ks.record_event(comp_done[l])
         ks.synchronize()
