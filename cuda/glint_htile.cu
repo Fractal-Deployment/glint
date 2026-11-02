@@ -8,6 +8,7 @@
  */
 #include "../include/glint_meta.h"
 #include "../include/glint_htile_load.h"
+#include "../include/glint_htile.h"
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 #include <stdint.h>
@@ -161,10 +162,10 @@ __global__ void glint_htile_s3_f32(
     if ((m0 + tm) < M && (n0 + tn) < N)
         y[(int64_t)(m0 + tm) * N + (n0 + tn)] = acc;
 }
-extern "C" int launch_glint_htile_s3_f32(
+extern "C" int launch_glint_htile_s3_f32_stream(
     const uint8_t *d_hole, const uint8_t *d_plug, const float *d_absmax,
     const __nv_bfloat16 *d_x, float *d_y,
-    int M, int N, int K, int blocksize)
+    int M, int N, int K, int blocksize, cudaStream_t stream)
 {
     if (!d_hole || !d_plug || !d_absmax || !d_x || !d_y)
         return -1;
@@ -174,6 +175,13 @@ extern "C" int launch_glint_htile_s3_f32(
         return -4;
     dim3 blk(TN, TM);
     dim3 grid((N + TN - 1) / TN, (M + TM - 1) / TM);
-    glint_htile_s3_f32<<<grid, blk>>>(d_hole, d_plug, d_absmax, d_x, d_y, M, N, K, blocksize);
+    glint_htile_s3_f32<<<grid, blk, 0, stream>>>(d_hole, d_plug, d_absmax, d_x, d_y, M, N, K, blocksize);
     return cudaGetLastError() == cudaSuccess ? 0 : -3;
+}
+extern "C" int launch_glint_htile_s3_f32(
+    const uint8_t *d_hole, const uint8_t *d_plug, const float *d_absmax,
+    const __nv_bfloat16 *d_x, float *d_y,
+    int M, int N, int K, int blocksize)
+{
+    return launch_glint_htile_s3_f32_stream(d_hole, d_plug, d_absmax, d_x, d_y, M, N, K, blocksize, 0);
 }

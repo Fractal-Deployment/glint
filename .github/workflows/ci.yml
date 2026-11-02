@@ -55,6 +55,14 @@ jobs:
         run: bash scripts/build_glint_cuda.sh
       - name: Compile H-TILE object (sm_86)
         run: nvcc -O3 -std=c++17 -arch=sm_86 -Iinclude -c cuda/glint_htile.cu -o glint_htile.o
+      - name: Compile real-weight streamer test (sm_86)
+        run: nvcc -O2 -std=c++17 -arch=sm_86 -Iinclude tests/test_streamer_real_weights.cu cuda/glint_plug_streamer.cu cuda/glint_htile.cu cuda/glint_encode.cu -o test_streamer_real_weights
+      - name: Compile synthetic streamer test (sm_86)
+        run: nvcc -O2 -std=c++17 -arch=sm_86 -Iinclude tests/test_glint_plug_streamer.cu cuda/glint_plug_streamer.cu -o test_glint_plug_streamer
+      - name: safetensors_c.h bounds and growth under ASan
+        run: |
+          gcc -std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined -Iinclude tests/test_st_bounds.c -o test_st_bounds
+          ./test_st_bounds
       - name: glint_encode.h declares the device entry point in any include order
         run: |
           printf '#include "glint_encode.h"\nvoid *p = (void *)glint_expand_packed_to_f32_device;\n' | gcc -fsyntax-only -Wall -Werror -Iinclude -x c -

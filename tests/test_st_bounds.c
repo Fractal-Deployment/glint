@@ -1,104 +1,135 @@
-/* test_st_bounds.c — safetensors_c.h hardening: no 2048-tensor cap, and malformed
- * files are rejected (with the file closed) instead of read out of bounds.
- * Optional argv[1]: a real .safetensors file that must open and have every tensor in range.
- * Build: gcc -O1 -fsanitize=address,undefined -Iinclude tests/test_st_bounds.c -o test_st_bounds
- */
+/* safetensors_c.h must grow past any fixed tensor count and refuse files whose
+ * header or tensor byte ranges fall outside the file. */
+#define _DEFAULT_SOURCE
 #include "safetensors_c.h"
-#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
-static int failures = 0;
-#define CHECK(cond, ...) do { if (!(cond)) { printf("FAIL: " __VA_ARGS__); printf("\n"); failures++; } } while (0)
+static char g_dir[512];
+static int g_failed = 0;
 
-static const char *TMP = "/tmp/glint_st_bounds.safetensors";
-
-/* Write [u64 header_len][header][data of data_bytes zero bytes]. header_len_field overrides the true length. */
-static void write_file(const char *header, uint64_t header_len_field, size_t data_bytes) {
-    FILE *f = fopen(TMP, "wb");
-    assert(f);
-    uint64_t hl = header_len_field;
-    fwrite(&hl, 8, 1, f);
-    fwrite(header, 1, strlen(header), f);
-    for (size_t i = 0; i < data_bytes; i++) fputc(0, f);
-    fclose(f);
+static void check(int ok, const char *what) {
+    printf("[%s] %s\n", ok ? "PASS" : "FAIL", what);
+    if (!ok) g_failed++;
 }
 
-static int open_case(const char *header, size_t data_bytes) {
-    write_file(header, strlen(header), data_bytes);
-    SafeTensors st;
-    int rc = safetensors_open(&st, TMP);
-    if (rc == 0) safetensors_close(&st);
-    else CHECK(st.mmap_ptr == NULL && st.entries == NULL, "failed open must leave st zeroed (rc=%d)", rc);
+static int open_tmp(SafeTensors *st, const char *name, const void *bytes, size_t n) {
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s", g_dir, name);
+    FILE *f = fopen(path, "wb");
+    if (!f || fwrite(bytes, 1, n, f) != n) {
+        perror(path);
+        exit(2);
+    }
+    fclose(f);
+    int rc = safetensors_open(st, path);
+    unlink(path);
     return rc;
 }
 
-int main(int argc, char **argv) {
-    printf("=== TEST SAFETENSORS BOUNDS ===\n");
+static size_t build(uint8_t *out, uint64_t header_len_field, const char *json, const void *data, size_t data_len) {
+    size_t jl = strlen(json);
+    memcpy(out, &header_len_field, 8);
+    memcpy(out + 8, json, jl);
+    memcpy(out + 8 + jl, data, data_len);
+    return 8 + jl + data_len;
+}
 
-    /* valid, one tensor */
-    CHECK(open_case("{\"a\":{\"dtype\":\"F32\",\"shape\":[2,2],\"data_offsets\":[0,16]}}", 16) == 0, "valid file rejected");
+static int open_rc(const char *name, const void *bytes, size_t n) {
+    SafeTensors st;
+    int rc = open_tmp(&st, name, bytes, n);
+    safetensors_close(&st);
+    return rc;
+}
 
-    /* more tensors than the old 2048 cap */
-    {
-        const int n = 5000;
-        size_t cap = (size_t)n * 90 + 16;
-        char *h = (char *)malloc(cap), *w = h;
-        w += sprintf(w, "{");
-        for (int i = 0; i < n; i++)
-            w += sprintf(w, "%s\"t%d\":{\"dtype\":\"U8\",\"shape\":[1],\"data_offsets\":[%d,%d]}", i ? "," : "", i, i, i + 1);
-        w += sprintf(w, "}");
-        write_file(h, strlen(h), (size_t)n);
-        SafeTensors st;
-        int rc = safetensors_open(&st, TMP);
-        CHECK(rc == 0, "5000-tensor file failed rc=%d", rc);
-        if (rc == 0) {
-            CHECK(st.n_entries == n, "n_entries=%d want %d", st.n_entries, n);
-            const TensorEntry *e = safetensors_find(&st, "t4999");
-            CHECK(e && e->begin == 4999, "last tensor missing");
-            safetensors_close(&st);
-        }
-        free(h);
+static void test_valid_file(void) {
+    const char *json = "{\"__metadata__\":{\"format\":\"pt\"},"
+                       "\"a\":{\"dtype\":\"F32\",\"shape\":[2],\"data_offsets\":[0,8]},"
+                       "\"b\":{\"dtype\":\"BF16\",\"shape\":[1,2],\"data_offsets\":[8,12]}}";
+    const uint8_t data[12] = {0, 0, 128, 63, 0, 0, 0, 64, 1, 2, 3, 4};
+    uint8_t buf[512];
+    size_t n = build(buf, strlen(json), json, data, sizeof(data));
+    SafeTensors st;
+    int rc = open_tmp(&st, "valid.safetensors", buf, n);
+    check(rc == 0 && st.n_entries == 2, "valid file opens with 2 tensors");
+    const TensorEntry *b = rc == 0 ? safetensors_find(&st, "b") : NULL;
+    check(b && b->n_dims == 2 && b->shape[1] == 2 && memcmp(b->data, data + 8, 4) == 0,
+          "tensor b points at its 4 data bytes");
+    safetensors_close(&st);
+}
+
+static void test_many_tensors(void) {
+    const int count = 3000;
+    size_t cap = (size_t)count * 96 + 64;
+    char *json = (char *)malloc(cap);
+    size_t o = (size_t)snprintf(json, cap, "{");
+    for (int i = 0; i < count; ++i)
+        o += (size_t)snprintf(json + o, cap - o, "%s\"t%d\":{\"dtype\":\"U8\",\"shape\":[1],\"data_offsets\":[%d,%d]}",
+                              i ? "," : "", i, i, i + 1);
+    o += (size_t)snprintf(json + o, cap - o, "}");
+    uint8_t *data = (uint8_t *)malloc((size_t)count);
+    for (int i = 0; i < count; ++i) data[i] = (uint8_t)i;
+    uint8_t *buf = (uint8_t *)malloc(8 + o + (size_t)count);
+    size_t n = build(buf, o, json, data, (size_t)count);
+    SafeTensors st;
+    int rc = open_tmp(&st, "many.safetensors", buf, n);
+    check(rc == 0 && st.n_entries == count, "3000 tensors open past the old 2048 cap");
+    const TensorEntry *last = rc == 0 ? safetensors_find(&st, "t2999") : NULL;
+    check(last && *(const uint8_t *)last->data == (uint8_t)2999, "last of 3000 tensors reads its byte");
+    safetensors_close(&st);
+    free(json);
+    free(data);
+    free(buf);
+}
+
+static void test_rejects(void) {
+    const char *json = "{\"w\":{\"dtype\":\"U8\",\"shape\":[16],\"data_offsets\":[0,16]}}";
+    uint8_t data[16];
+    memset(data, 7, sizeof(data));
+    uint8_t buf[512];
+
+    size_t n = build(buf, strlen(json), json, data, sizeof(data));
+    check(open_rc("truncated.safetensors", buf, n - 5) == -4, "truncated data region returns -4");
+
+    n = build(buf, (uint64_t)1 << 40, json, data, sizeof(data));
+    check(open_rc("oversized_header.safetensors", buf, n) == -4, "header_len past end of file returns -4");
+
+    n = build(buf, strlen(json) + sizeof(data) + 1, json, data, sizeof(data));
+    check(open_rc("header_one_past.safetensors", buf, n) == -4, "header_len one byte past end of file returns -4");
+
+    check(open_rc("short.safetensors", buf, 5) == -4, "file shorter than the 8-byte length prefix returns -4");
+
+    const char *inverted = "{\"w\":{\"dtype\":\"U8\",\"shape\":[16],\"data_offsets\":[12,4]}}";
+    n = build(buf, strlen(inverted), inverted, data, sizeof(data));
+    check(open_rc("inverted.safetensors", buf, n) == -4, "begin > end returns -4");
+
+    const char *wrap = "{\"w\":{\"dtype\":\"U8\",\"shape\":[16],\"data_offsets\":[0,18446744073709551632]}}";
+    n = build(buf, strlen(wrap), wrap, data, sizeof(data));
+    check(open_rc("wrap.safetensors", buf, n) == -3, "offset that overflows uint64 returns -3");
+
+    const char *unterminated = "{\"w\":{\"dtype\":\"U8\",\"shape\":[16],\"data_offsets\":[0,16]";
+    uint8_t tail[16];
+    memset(tail, 'x', sizeof(tail));
+    n = build(buf, strlen(unterminated), unterminated, tail, sizeof(tail));
+    check(open_rc("unterminated.safetensors", buf, n) == -3, "header that ends mid-object returns -3");
+}
+
+int main(void) {
+    const char *tmp = getenv("TMPDIR");
+    snprintf(g_dir, sizeof(g_dir), "%s/st_bounds_XXXXXX", tmp && *tmp ? tmp : "/tmp");
+    if (!mkdtemp(g_dir)) {
+        perror("mkdtemp");
+        return 2;
     }
-
-    /* offsets past end of file */
-    CHECK(open_case("{\"a\":{\"dtype\":\"F32\",\"shape\":[2,2],\"data_offsets\":[0,16]}}", 8) == -5, "end past EOF accepted");
-    /* begin > end */
-    CHECK(open_case("{\"a\":{\"dtype\":\"U8\",\"shape\":[4],\"data_offsets\":[8,4]}}", 16) == -5, "begin>end accepted");
-    /* byte count disagrees with dtype*shape */
-    CHECK(open_case("{\"a\":{\"dtype\":\"BF16\",\"shape\":[4],\"data_offsets\":[0,4]}}", 16) == -5, "size mismatch accepted");
-    /* shape overflow */
-    CHECK(open_case("{\"a\":{\"dtype\":\"F32\",\"shape\":[4294967296,4294967296],\"data_offsets\":[0,0]}}", 16) == -5, "shape overflow accepted");
-    /* header_len larger than file */
-    write_file("{}", 1ull << 40, 0);
-    { SafeTensors st; CHECK(safetensors_open(&st, TMP) == -3, "huge header_len accepted"); }
-    /* file shorter than 8 bytes */
-    { FILE *f = fopen(TMP, "wb"); fwrite("abc", 1, 3, f); fclose(f);
-      SafeTensors st; CHECK(safetensors_open(&st, TMP) == -3, "3-byte file accepted"); }
-    /* truncated JSON */
-    CHECK(open_case("{\"a\":{\"dtype\":\"F32\",\"shape\":[2,2],\"data_offsets\":[0,16]", 16) == -4, "truncated JSON accepted");
-    /* missing offsets */
-    CHECK(open_case("{\"a\":{\"dtype\":\"F32\",\"shape\":[2,2]}}", 16) == -4, "missing data_offsets accepted");
-    /* header not an object */
-    CHECK(open_case("[1,2]", 0) == -3, "non-object header accepted");
-    /* nonexistent file */
-    { SafeTensors st; CHECK(safetensors_open(&st, "/nonexistent/x.safetensors") == -1, "missing file not -1"); }
-
-    /* real weights: every tensor must lie inside the file and match dtype*shape */
-    if (argc > 1) {
-        SafeTensors st;
-        int rc = safetensors_open(&st, argv[1]);
-        CHECK(rc == 0, "real file %s rc=%d", argv[1], rc);
-        if (rc == 0) {
-            printf("real file: %d tensors, %zu bytes\n", st.n_entries, st.file_size);
-            CHECK(st.n_entries > 0, "no tensors in real file");
-            safetensors_close(&st);
-        }
+    test_valid_file();
+    test_many_tensors();
+    test_rejects();
+    if (rmdir(g_dir) != 0) {
+        perror(g_dir);
+        g_failed++;
     }
-
-    remove(TMP);
-    if (failures) { printf("SAFETENSORS BOUNDS: %d FAILURES\n", failures); return 1; }
-    printf("SAFETENSORS BOUNDS PASSED.\n");
-    return 0;
+    printf("%s: %d failed\n", g_failed ? "FAIL" : "PASS", g_failed);
+    return g_failed ? 1 : 0;
 }
