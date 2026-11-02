@@ -27,6 +27,9 @@ struct PinLinears {
     float *ps[N_LAYERS][ARM0_N_LINEARS];
     int8_t *plug_i8;
     size_t plug_bytes;
+    int resolve;
+    int8_t *rq;
+    float *sr;
 };
 
 static uint64_t align256(uint64_t v) { return (v + 255) & ~255ull; }
@@ -89,7 +92,9 @@ static void pin_linear(void *ctx, int layer, Arm0Linear which, const __nv_bfloat
     if (lin->path == GEMM_MMA_W8A8) {
         const Int8PinLinear &p = lin->packed[layer][which];
         Int8MmaLinear w = {p.q, p.scale, p.n_out, p.k_in};
-        if (lin->pq[layer][which])
+        if (lin->resolve)
+            CK(int8_mma_gemm_resolve(x, w, lin->pq[layer][which], lin->ps[layer][which], y, m, lin->xq, lin->sx, lin->rq, lin->sr, lin->pq[layer][which] ? lin->plug_i8 : NULL, 0));
+        else if (lin->pq[layer][which])
             CK(int8_mma_gemm_plug(x, w, lin->pq[layer][which], lin->ps[layer][which], y, m, lin->xq, lin->sx, lin->plug_i8, 0));
         else
             CK(int8_mma_gemm(x, w, y, m, lin->xq, lin->sx, 0));
@@ -151,6 +156,12 @@ int main(int argc, char **argv) {
         for (int j = 0; j < ARM0_N_LINEARS; j++) kmax = ARM0_LINEAR[j].k_in > kmax ? ARM0_LINEAR[j].k_in : kmax;
         CK(cudaMalloc(&g_lin.xq, int8_mma_xq_bytes(2048, kmax)));
         CK(cudaMalloc(&g_lin.sx, int8_mma_sx_bytes(2048, kmax)));
+        if (getenv("ARM0_RESOLVE") && path == GEMM_MMA_W8A8) {
+            g_lin.resolve = 1;
+            CK(cudaMalloc(&g_lin.rq, int8_mma_xq_bytes(2048, kmax)));
+            CK(cudaMalloc(&g_lin.sr, int8_mma_sx_bytes(2048, kmax)));
+            printf("Resolution mode: activation residual second pass ON\n");
+        }
     }
     cudaStream_t copy_stream = 0;
     if (path == GEMM_MMA_STREAM) {
