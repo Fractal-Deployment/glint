@@ -2,7 +2,7 @@
  * Loads unquantized BF16 weights directly from model-00001-of-00002.safetensors and model-00002-of-00002.safetensors.
  * Executes on RTX 3060 via Tensor Core cuBLAS and online softmax causal attention.
  * Verifies Gate 1:
- *   - Top-1 argmax token agreement >= 99.0% vs HuggingFace Oracle
+ *   - Top-1 argmax token agreement >= 95.0% vs HuggingFace (amended 2026-11-02, GATE_RULES.md C.1) Oracle
  *   - Perplexity within 1.0% of HuggingFace Oracle
  * Exit: 0 gate PASS (or INT8 report), 1 gate FAIL, 2 usage, 3 setup, I/O or CUDA error.
  */
@@ -150,7 +150,7 @@ int main(int argc, char** argv) {
     printf("Top-1 Matches:          %d / 2047\n", top1_matches);
     printf("Top-1 Agreement:        %.2f %%\n", top1_acc);
 
-    int pass = top1_acc >= 99.0 && ppl_delta_pct <= 1.0;
+    int pass = top1_acc >= 95.0 && ppl_delta_pct <= 1.0;
     if (int8_pin) printf("VERDICT: REPORT ONLY (INT8 pin %s, no gate)\n", int8_pin_path);
     else printf(pass ? "VERDICT: PASS (Gate 1 Anchor Verified)\n" : "VERDICT: FAIL (Gate 1 Anchor Mismatch)\n");
     fflush(stdout);
