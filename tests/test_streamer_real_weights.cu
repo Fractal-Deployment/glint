@@ -1,8 +1,10 @@
 /* Real Phi-4-mini BF16 weights -> CUDA GLINT encode -> plugs streamed through
  * the two-slot streamer into H-TILE. Gates: streamed output is bit-identical to
- * the same H-TILE run with plugs resident over four back-to-back passes (the
- * last two overwrite each slot with random bytes once its reader is released),
- * and resident output matches a host decode GEMM within an f32 summation bound.
+ * the same H-TILE run with plugs resident over six back-to-back passes, and
+ * resident output matches a host decode GEMM within an f32 summation bound.
+ * Passes 2-3 overwrite each slot with random bytes once its reader is released.
+ * Passes 4-5 spin on compute_stream before each H-TILE launch, so every slot is
+ * read long after the copy stream could have refilled it.
  * Error against the BF16 GEMM of the original weights is printed, not gated.
  *
  * ./test_streamer_real_weights <model-00001-of-00002.safetensors> [n_layers=2] [M=4]
@@ -41,8 +43,11 @@
     } while (0)
 
 static const int kBlocksize = 64;
-static const int kPasses = 4;
-static int poisoned(int pass) { return pass >= kPasses / 2; }
+static const double kDelayMs = 20.0;
+enum PassKind { PLAIN, POISON, DELAY };
+static const PassKind kPassKinds[] = {PLAIN, PLAIN, POISON, POISON, DELAY, DELAY};
+static const int kPasses = sizeof(kPassKinds) / sizeof(kPassKinds[0]);
+static const char *kPassKindNames[] = {"plain", "poisoned", "delayed"};
 static const char *kMatrices[] = {"self_attn.qkv_proj", "self_attn.o_proj", "mlp.gate_up_proj", "mlp.down_proj"};
 
 typedef struct {
@@ -59,6 +64,12 @@ typedef struct {
     float *d_y_resident;
     float *d_y_streamed[kPasses];
 } Unit;
+
+__global__ void k_spin(long long cycles) {
+    const long long t0 = clock64();
+    while (clock64() - t0 < cycles) {
+    }
+}
 
 static uint64_t g_rng = 0x9E3779B97F4A7C15ull;
 static uint64_t next_u64(void) {
@@ -198,6 +209,9 @@ int main(int argc, char **argv) {
     for (uint64_t i = 0; i < max_plug; ++i) poison[i] = (uint8_t)next_u64();
     cudaEvent_t released[64];
     for (int u = 0; u < n_units; ++u) CK(cudaEventCreateWithFlags(&released[u], cudaEventDisableTiming));
+    int clock_khz = 0;
+    CK(cudaDeviceGetAttribute(&clock_khz, cudaDevAttrClockRate, 0));
+    const long long delay_cycles = (long long)(kDelayMs * clock_khz);
 
     for (int p = 0; p < kPasses; ++p) {
         REQUIRE(glint_plug_streamer_start(streamer) == 0, "start pass %d", p);
@@ -209,10 +223,11 @@ int main(int argc, char **argv) {
             Unit *x = &units[u];
             const uint8_t *d_slot = NULL;
             REQUIRE(glint_plug_streamer_acquire(streamer, u, &d_slot) == 0 && d_slot, "acquire %d", u);
+            if (kPassKinds[p] == DELAY) k_spin<<<1, 1, 0, compute_stream>>>(delay_cycles);
             REQUIRE(launch_glint_htile_s3_f32_stream(x->d_hole, d_slot, x->d_absmax, x->d_x, x->d_y_streamed[p],
                                               M, x->N, x->K, kBlocksize, compute_stream) == 0, "streamed launch %d", u);
             REQUIRE(glint_plug_streamer_release(streamer, u) == 0, "release %d", u);
-            if (!poisoned(p)) continue;
+            if (kPassKinds[p] != POISON) continue;
             CK(cudaEventRecord(released[u], compute_stream));
             CK(cudaStreamWaitEvent(copy_stream, released[u], 0));
             CK(cudaMemcpyAsync((void *)d_slot, poison, plug_bytes[u], cudaMemcpyHostToDevice, copy_stream));
@@ -221,8 +236,7 @@ int main(int argc, char **argv) {
     CK(cudaDeviceSynchronize());
 
     int failed = 0;
-    printf("streamed vs resident (bitwise, %d back-to-back passes; passes %d+ poison each released slot):\n",
-           kPasses, kPasses / 2);
+    printf("streamed vs resident (bitwise, %d back-to-back passes):\n", kPasses);
     for (int u = 0; u < n_units; ++u) {
         const size_t ny = (size_t)M * units[u].N;
         float *res = download(units[u].d_y_resident, ny);
@@ -230,8 +244,8 @@ int main(int argc, char **argv) {
             float *str = download(units[u].d_y_streamed[p], ny);
             size_t mismatched = 0;
             for (size_t i = 0; i < ny; ++i) mismatched += memcmp(&res[i], &str[i], 4) != 0;
-            printf("  %-40s pass %d: %zu / %zu outputs differ [%s]\n", units[u].name, p, mismatched, ny,
-                   mismatched ? "FAIL" : "PASS");
+            printf("  %-40s pass %d (%s): %zu / %zu outputs differ [%s]\n", units[u].name, p,
+                   kPassKindNames[kPassKinds[p]], mismatched, ny, mismatched ? "FAIL" : "PASS");
             failed += mismatched != 0;
             free(str);
         }
