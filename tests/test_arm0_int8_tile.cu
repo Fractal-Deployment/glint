@@ -1,7 +1,8 @@
 #include "arm0_forward.h"
 #include "../include/int8_tile_gemm.h"
+#include "../include/int8_mma_gemm.h"
 
-enum GemmPath { GEMM_TILE, GEMM_CUBLAS_DEQUANT };
+enum GemmPath { GEMM_TILE, GEMM_CUBLAS_DEQUANT, GEMM_MMA_W8A8 };
 
 __global__ void dequant_bf16_kernel(const int8_t *q, const float *s, __nv_bfloat16 *w, size_t numel) {
     size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
@@ -14,6 +15,8 @@ struct PinLinears {
     Int8PinLinear packed[N_LAYERS][ARM0_N_LINEARS];
     __nv_bfloat16 *bf16[N_LAYERS][ARM0_N_LINEARS];
     size_t weight_bytes;
+    int8_t *xq;
+    float *sx;
 };
 
 static void load_linear(PinLinears *lin, const SafeTensors *pin, int layer, Arm0Linear which) {
@@ -31,7 +34,7 @@ static void load_linear(PinLinears *lin, const SafeTensors *pin, int layer, Arm0
     CK(cudaMalloc(&d_s, scale_bytes));
     CK(cudaMemcpy(d_q, eq->data, numel, cudaMemcpyHostToDevice));
     CK(cudaMemcpy(d_s, es->data, scale_bytes, cudaMemcpyHostToDevice));
-    if (lin->path == GEMM_TILE) {
+    if (lin->path == GEMM_TILE || lin->path == GEMM_MMA_W8A8) {
         lin->packed[layer][which] = Int8PinLinear{d_q, d_s, n_out, k_in};
         lin->weight_bytes += numel + scale_bytes;
         return;
@@ -49,6 +52,12 @@ static void pin_linear(void *ctx, int layer, Arm0Linear which, const __nv_bfloat
     const PinLinears *lin = (const PinLinears *)ctx;
     if (lin->path == GEMM_TILE) {
         CK(int8_tile_gemm_bf16(x, lin->packed[layer][which], y, m, 0));
+        return;
+    }
+    if (lin->path == GEMM_MMA_W8A8) {
+        const Int8PinLinear &p = lin->packed[layer][which];
+        Int8MmaLinear w = {p.q, p.scale, p.n_out, p.k_in};
+        CK(int8_mma_gemm(x, w, y, m, lin->xq, lin->sx, 0));
         return;
     }
     int n_out = ARM0_LINEAR[which].n_out, k_in = ARM0_LINEAR[which].k_in;
@@ -74,16 +83,17 @@ int main(int argc, char **argv) {
     if (argi + 1 < argc && strcmp(argv[argi], "--gemm") == 0) {
         if (strcmp(argv[argi + 1], "tile") == 0) path = GEMM_TILE;
         else if (strcmp(argv[argi + 1], "cublas") == 0) path = GEMM_CUBLAS_DEQUANT;
+        else if (strcmp(argv[argi + 1], "mma") == 0) path = GEMM_MMA_W8A8;
         else argi = argc;
         argi += 2;
     }
     if (argc - argi != 3) {
-        printf("usage: %s [--gemm tile|cublas] PIN.safetensors <model_snapshot_dir> <artifacts_dir>\n", argv[0]);
+        printf("usage: %s [--gemm tile|cublas|mma] PIN.safetensors <model_snapshot_dir> <artifacts_dir>\n", argv[0]);
         return EXIT_USAGE;
     }
     const char *pin_path = argv[argi];
     const char *model_dir = argv[argi + 1];
-    const char *path_name = path == GEMM_TILE ? "INT8 tile GEMM (packed resident)" : "INT8 dequant-to-BF16 + cuBLAS";
+    const char *path_name = path == GEMM_TILE ? "INT8 tile GEMM (packed resident)" : path == GEMM_MMA_W8A8 ? "INT8 tensor-core W8A8 (packed resident)" : "INT8 dequant-to-BF16 + cuBLAS";
 
     arm0_read_eval(argv[argi + 2], &g_eval);
 
@@ -100,6 +110,12 @@ int main(int argc, char **argv) {
     CK(cudaDeviceSynchronize());
     size_t used_before_linears = vram_used();
     g_lin.path = path;
+    if (path == GEMM_MMA_W8A8) {
+        int kmax = 0;
+        for (int j = 0; j < ARM0_N_LINEARS; j++) kmax = ARM0_LINEAR[j].k_in > kmax ? ARM0_LINEAR[j].k_in : kmax;
+        CK(cudaMalloc(&g_lin.xq, int8_mma_xq_bytes(2048, kmax)));
+        CK(cudaMalloc(&g_lin.sx, int8_mma_sx_bytes(2048, kmax)));
+    }
     for (int l = 0; l < N_LAYERS; l++)
         for (int j = 0; j < ARM0_N_LINEARS; j++) load_linear(&g_lin, &pin, l, (Arm0Linear)j);
     CK(cudaDeviceSynchronize());
