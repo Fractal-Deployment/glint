@@ -12,6 +12,7 @@ The orchestrator attaches glint through `training_orchestrator/scripts/orch_p7_s
 - `int8_mma_gemm` (W8A8 INT8 tensor-core GEMM over a `bf16_to_int8_pin_v1` linear; `include/int8_mma_gemm.h`)
 - `int8_mma_gemm_plug` (same, plus a p7_plug_res4_v1 slice added by an accumulating second pass; additive, ABI unchanged)
 - `p7_int8_gemm_flat` (flat-argument int8_mma_gemm for FFI callers such as Mojo; additive)
+- `p7_int8_gemm_plug_flat` (flat-argument int8_mma_gemm_plug_fused; additive)
 - `glint_plug_streamer_{create,set_host_data,start,acquire,release,get_stats,destroy}` (2-slot ring; `include/glint_plug_streamer.h`)
 
 ## Self-test (`p7_abi_selftest`)
