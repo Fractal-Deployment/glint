@@ -170,6 +170,7 @@ static void check_vs_cublas(const char *label, const __nv_bfloat16 *h_x, const i
     CK(cudaMemcpy(d_x, h_x, (size_t)m * k * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice));
     CK(cudaMemcpy(d_q, h_q, numel, cudaMemcpyHostToDevice));
     CK(cudaMemcpy(d_s, h_s, n_scale * sizeof(float), cudaMemcpyHostToDevice));
+    CK(cudaMemset(d_y_tile, 0xff, (size_t)m * n * sizeof(float)));
     dequant_bf16_kernel<<<(unsigned)((numel + 255) / 256), 256>>>(d_q, d_s, d_w, d_w_abs, numel);
     abs_bf16_kernel<<<(unsigned)(((size_t)m * k + 255) / 256), 256>>>(d_x, d_x_abs, (size_t)m * k);
     CK(cudaGetLastError());
