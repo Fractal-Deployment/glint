@@ -1,5 +1,6 @@
 #include "arm0_forward.h"
 #include <vector>
+#include <algorithm>
 #include "../include/int8_tile_gemm.h"
 #include "../include/int8_mma_gemm.h"
 #include "../include/glint_plug_streamer.h"
@@ -205,6 +206,14 @@ int main(int argc, char **argv) {
     printf("HuggingFace Oracle PPL: %.6f\n", g_eval.oracle_ppl);
     printf("PPL Delta vs Oracle:    %.4f %%\n", fabs(ppl - g_eval.oracle_ppl) / g_eval.oracle_ppl * 100.0);
     printf("Top-1 Matches:          %d / 2047 (%.2f %%)\n", top1_matches, top1_matches / 20.47);
+    if (g_result.has_kl) {
+        std::vector<float> k(g_result.kl, g_result.kl + 2047);
+        double sum = 0; int agree = 0;
+        for (int i = 0; i < 2047; i++) { sum += k[i]; agree += g_result.top1[i] == g_result.ref_top1[i]; }
+        std::sort(k.begin(), k.end());
+        printf("KL(BF16 || this) per token: mean %.6e  median %.6e  p99 %.6e  max %.6e\n", sum / 2047, k[1023], k[(int)(2047 * 0.99)], k[2046]);
+        printf("Top-1 agreement with BF16 CUDA anchor: %d / 2047 (%.2f %%)\n", agree, agree / 20.47);
+    }
     printf("Top-1 FNV-1a 64:        %016llx\n", (unsigned long long)top1_hash);
     printf("VRAM used at end of forward: %zu (%.3f GiB)\n", used_peak, used_peak / 1073741824.0);
     printf("VERDICT: REPORT ONLY (INT8 pin %s, no gate)\n", pin_path);

@@ -251,6 +251,59 @@ __global__ void residual_add_kernel(float* __restrict__ x, const float* __restri
     }
 }
 
+
+/* KL(ref || q) per row from two logit rows, plus the argmax of each. One block per row. */
+__global__ void kl_and_argmax_kernel(const float* __restrict__ ref, const float* __restrict__ q, float* __restrict__ kl,
+                                     int32_t* __restrict__ ref_top1, int32_t* __restrict__ q_top1, int M, int V)
+{
+    int row = blockIdx.x;
+    if (row >= M) return;
+    const float* a = ref + (size_t)row * V;
+    const float* b = q + (size_t)row * V;
+    __shared__ float sm[256];
+    __shared__ int si[256];
+    float amax = -INFINITY, bmax = -INFINITY; int ai = 0, bi = 0;
+    for (int i = threadIdx.x; i < V; i += 256) {
+        if (a[i] > amax) { amax = a[i]; ai = i; }
+        if (b[i] > bmax) { bmax = b[i]; bi = i; }
+    }
+    float v[2] = {amax, bmax}; int ix[2] = {ai, bi}; float mx[2];
+    for (int w = 0; w < 2; w++) {
+        sm[threadIdx.x] = v[w]; si[threadIdx.x] = ix[w];
+        __syncthreads();
+        for (int st = 128; st > 0; st >>= 1) {
+            if (threadIdx.x < st && (sm[threadIdx.x + st] > sm[threadIdx.x] ||
+                (sm[threadIdx.x + st] == sm[threadIdx.x] && si[threadIdx.x + st] < si[threadIdx.x]))) {
+                sm[threadIdx.x] = sm[threadIdx.x + st]; si[threadIdx.x] = si[threadIdx.x + st];
+            }
+            __syncthreads();
+        }
+        mx[w] = sm[0];
+        if (threadIdx.x == 0) { if (w == 0) ref_top1[row] = si[0]; else q_top1[row] = si[0]; }
+        __syncthreads();
+    }
+    double sa = 0, sb = 0;
+    for (int i = threadIdx.x; i < V; i += 256) { sa += exp((double)a[i] - mx[0]); sb += exp((double)b[i] - mx[1]); }
+    __shared__ double sd[256];
+    double tot[2];
+    for (int w = 0; w < 2; w++) {
+        sd[threadIdx.x] = w == 0 ? sa : sb;
+        __syncthreads();
+        for (int st = 128; st > 0; st >>= 1) { if (threadIdx.x < st) sd[threadIdx.x] += sd[threadIdx.x + st]; __syncthreads(); }
+        tot[w] = sd[0];
+        __syncthreads();
+    }
+    double lza = log(tot[0]) + mx[0], lzb = log(tot[1]) + mx[1], acc = 0;
+    for (int i = threadIdx.x; i < V; i += 256) {
+        double la = (double)a[i] - lza, lb = (double)b[i] - lzb;
+        acc += exp(la) * (la - lb);
+    }
+    sd[threadIdx.x] = acc;
+    __syncthreads();
+    for (int st = 128; st > 0; st >>= 1) { if (threadIdx.x < st) sd[threadIdx.x] += sd[threadIdx.x + st]; __syncthreads(); }
+    if (threadIdx.x == 0) kl[row] = (float)sd[0];
+}
+
 __global__ void compute_ce_and_argmax_kernel(
     const float* __restrict__ logits,
     const int32_t* __restrict__ targets,
@@ -421,6 +474,9 @@ struct Arm0Model {
 struct Arm0Result {
     float losses[2047];
     int32_t top1[2047];
+    float kl[2047];
+    int32_t ref_top1[2047];
+    int has_kl;
     double seconds;
 };
 
@@ -509,6 +565,16 @@ static void arm0_forward(const Arm0Model *model, const int32_t tokens[2048], Arm
 
     int32_t *d_targets, *d_top1;
     float *d_losses, *d_logits_chunk;
+    const char *logits_out = getenv("ARM0_LOGITS_OUT"), *logits_ref = getenv("ARM0_LOGITS_REF");
+    FILE *f_out = NULL, *f_ref = NULL;
+    float *d_ref = NULL, *d_kl = NULL, *h_buf = NULL; int32_t *d_rt1 = NULL, *d_qt1 = NULL;
+    if (logits_out && !(f_out = fopen(logits_out, "wb"))) setup_fail("cannot write %s", logits_out);
+    if (logits_ref) {
+        if (!(f_ref = fopen(logits_ref, "rb"))) setup_fail("cannot read %s", logits_ref);
+        CK(cudaMalloc(&d_ref, 256 * (size_t)VOCAB_SIZE * sizeof(float))); CK(cudaMalloc(&d_kl, 2047 * sizeof(float)));
+        CK(cudaMalloc(&d_rt1, 2047 * sizeof(int32_t))); CK(cudaMalloc(&d_qt1, 2047 * sizeof(int32_t)));
+    }
+    if (f_out || f_ref) h_buf = (float *)malloc(256 * (size_t)VOCAB_SIZE * sizeof(float));
     CK(cudaMalloc(&d_targets, 2047 * sizeof(int32_t)));
     CK(cudaMalloc(&d_top1, 2047 * sizeof(int32_t)));
     CK(cudaMalloc(&d_losses, 2047 * sizeof(float)));
@@ -550,8 +616,26 @@ static void arm0_forward(const Arm0Model *model, const int32_t tokens[2048], Arm
         compute_ce_and_argmax_kernel<<<cur, 256>>>(d_logits_chunk, d_targets + offset, d_losses + offset,
                                                    d_top1 + offset, cur, VOCAB_SIZE);
         CK(cudaGetLastError());
+        if (f_out) {
+            CK(cudaMemcpy(h_buf, d_logits_chunk, (size_t)cur * VOCAB_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
+            if (fwrite(h_buf, sizeof(float), (size_t)cur * VOCAB_SIZE, f_out) != (size_t)cur * VOCAB_SIZE) setup_fail("short write %s", logits_out);
+        }
+        if (f_ref) {
+            if (fread(h_buf, sizeof(float), (size_t)cur * VOCAB_SIZE, f_ref) != (size_t)cur * VOCAB_SIZE) setup_fail("short read %s", logits_ref);
+            CK(cudaMemcpy(d_ref, h_buf, (size_t)cur * VOCAB_SIZE * sizeof(float), cudaMemcpyHostToDevice));
+            kl_and_argmax_kernel<<<cur, 256>>>(d_ref, d_logits_chunk, d_kl + offset, d_rt1 + offset, d_qt1 + offset, cur, VOCAB_SIZE);
+            CK(cudaGetLastError());
+        }
     }
     CK(cudaDeviceSynchronize());
+    out->has_kl = f_ref != NULL;
+    if (f_ref) {
+        CK(cudaMemcpy(out->kl, d_kl, 2047 * sizeof(float), cudaMemcpyDeviceToHost));
+        CK(cudaMemcpy(out->ref_top1, d_rt1, 2047 * sizeof(int32_t), cudaMemcpyDeviceToHost));
+        fclose(f_ref);
+    }
+    if (f_out) fclose(f_out);
+    free(h_buf);
     out->seconds = (double)(clock() - t0) / CLOCKS_PER_SEC;
     CK(cudaMemcpy(out->losses, d_losses, 2047 * sizeof(float), cudaMemcpyDeviceToHost));
     CK(cudaMemcpy(out->top1, d_top1, 2047 * sizeof(int32_t), cudaMemcpyDeviceToHost));
