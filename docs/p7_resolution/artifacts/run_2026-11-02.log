@@ -1,0 +1,84 @@
+with_gpu_flock: acquiring /tmp/training_orchestrator_gpu.lock wait=3600s cmd=lxc exec 40-Runtime-Deps -- /mnt/spill/compile_scratch/p7-resolution/test_residual_correction
+max |R/s| 0.8247 (device 0.8247), max |R - R_hat| / s 0.0714, clamped 0
+[PASS] every residual fits the 4-bit range without clamping
+[PASS] device max |R/s| matches the host
+[PASS] R_hat is within half a step of R everywhere
+[PASS] column norms match the decoded residual
+[PASS] top-1 by |x| keeps the reference channels, ties to the lowest index
+[PASS] top-7 by |x| keeps the reference channels, ties to the lowest index
+[PASS] top-64 by |x| keeps the reference channels, ties to the lowest index
+[PASS] top-320 by |x| keeps the reference channels, ties to the lowest index
+[PASS] top-1 by |x| * ||R col|| keeps the reference channels, ties to the lowest index
+[PASS] top-7 by |x| * ||R col|| keeps the reference channels, ties to the lowest index
+[PASS] top-64 by |x| * ||R col|| keeps the reference channels, ties to the lowest index
+[PASS] top-320 by |x| * ||R col|| keeps the reference channels, ties to the lowest index
+[PASS] ksel outside [1, k_in] is refused
+per-row correction max abs err vs double 0
+[PASS] y += X[:, sel_row] R_hat[:, sel_row]^T matches double per row
+static-column correction max abs err vs double 0
+[PASS] a gathered column block corrects exactly the channels it names
+VERDICT: PASS (0 failed)
+with_gpu_flock: acquiring /tmp/training_orchestrator_gpu.lock wait=3600s cmd=lxc exec 40-Runtime-Deps -- /mnt/spill/compile_scratch/p7-resolution/test_arm0_resolution /home/workspace/pins/Phi-4-mini-int8-from-bf16/model.safetensors /opt/models/.hf_cache/hub/models--microsoft--Phi-4-mini-instruct/snapshots/cfbefacb99257ffa30c83adab238a50856ac3083 /home/workspace/fractal-deployment/worktrees/glint/resolution/docs/p7_mode3_fold/artifacts /home/workspace/fractal-deployment/worktrees/glint/resolution/docs/p7_resolution/artifacts /mnt/spill/compile_scratch/p7-resolution/ref/hf_logits_2048.bf16 /mnt/spill/compile_scratch/p7-resolution/results.tsv 0.01 0.03 0.10 0.30
+Read 2048 tokens successfully.
+Read 2047 oracle top-1 tokens; sha256 matches hf_meta.json (oracle ppl 5.486957).
+HF bf16 logits [2047, 200064] read; sha256 matches hf_logits_meta.json.
+ROW bf16         frac 1.000 resident  ppl 5.491616 top1 2015/2047 kl_hf 0.001534 kl_hf_max 0.0299 kl_cbf16 0.000000 bytes/token 0 vram 7.898 GiB h2d 0 used_union 0.0000 resid_left -1.0000 fwd 3.4 s
+ROW bf16_splitk  frac 1.000 resident  ppl 5.483657 top1 2019/2047 kl_hf 0.001489 kl_hf_max 0.0299 kl_cbf16 0.001493 bytes/token 0 vram 7.898 GiB h2d 0 used_union 0.0000 resid_left -1.0000 fwd 3.5 s
+Residual built: 1610612736 bytes pinned host (4 bits/weight over 3221225472 weights), max |R/scale| 0.9338, clamped 0. INT8 base linears 3422552064 bytes resident.
+calib layer  0: rel error base vs full 0.00717, growth 0.00717
+calib layer  1: rel error base vs full 0.01003, growth 0.00286
+calib layer  2: rel error base vs full 0.01238, growth 0.00235
+calib layer  3: rel error base vs full 0.01633, growth 0.00395
+calib layer  4: rel error base vs full 0.01886, growth 0.00253
+calib layer  5: rel error base vs full 0.01955, growth 0.00069
+calib layer  6: rel error base vs full 0.02093, growth 0.00138
+calib layer  7: rel error base vs full 0.02252, growth 0.00159
+calib layer  8: rel error base vs full 0.02352, growth 0.00100
+calib layer  9: rel error base vs full 0.02502, growth 0.00150
+calib layer 10: rel error base vs full 0.02425, growth -0.00077
+calib layer 11: rel error base vs full 0.02473, growth 0.00048
+calib layer 12: rel error base vs full 0.02565, growth 0.00092
+calib layer 13: rel error base vs full 0.02583, growth 0.00018
+calib layer 14: rel error base vs full 0.02658, growth 0.00075
+calib layer 15: rel error base vs full 0.02698, growth 0.00040
+calib layer 16: rel error base vs full 0.02724, growth 0.00027
+calib layer 17: rel error base vs full 0.02699, growth -0.00025
+calib layer 18: rel error base vs full 0.02531, growth -0.00168
+calib layer 19: rel error base vs full 0.02528, growth -0.00003
+calib layer 20: rel error base vs full 0.02443, growth -0.00085
+calib layer 21: rel error base vs full 0.02328, growth -0.00115
+calib layer 22: rel error base vs full 0.02257, growth -0.00071
+calib layer 23: rel error base vs full 0.02291, growth 0.00033
+calib layer 24: rel error base vs full 0.02328, growth 0.00037
+calib layer 25: rel error base vs full 0.02365, growth 0.00037
+calib layer 26: rel error base vs full 0.02393, growth 0.00028
+calib layer 27: rel error base vs full 0.02404, growth 0.00011
+calib layer 28: rel error base vs full 0.02496, growth 0.00092
+calib layer 29: rel error base vs full 0.02624, growth 0.00129
+calib layer 30: rel error base vs full 0.02843, growth 0.00218
+calib layer 31: rel error base vs full 0.02407, growth -0.00436
+ROW base         frac 0.000 resident  ppl 5.501980 top1 2003/2047 kl_hf 0.002584 kl_hf_max 0.3155 kl_cbf16 0.002498 bytes/token 0 vram 7.152 GiB h2d 0 used_union 0.0000 resid_left 1.0000 fwd 3.8 s
+ROW full         frac 1.000 resident  ppl 5.477725 top1 2016/2047 kl_hf 0.001570 kl_hf_max 0.0781 kl_cbf16 0.001497 bytes/token 1610612736 vram 7.152 GiB h2d 0 used_union 0.0000 resid_left 0.0000 fwd 4.4 s
+ROW decdec       frac 0.010 resident  ppl 5.483785 top1 2016/2047 kl_hf 0.001737 kl_hf_max 0.0310 kl_cbf16 0.001823 bytes/token 16231360 vram 7.152 GiB h2d 0 used_union 0.7915 resid_left 0.6511 fwd 5.4 s
+ROW decdec_norm  frac 0.010 resident  ppl 5.480124 top1 2010/2047 kl_hf 0.001719 kl_hf_max 0.0459 kl_cbf16 0.001768 bytes/token 16231360 vram 7.196 GiB h2d 0 used_union 0.7976 resid_left 0.6493 fwd 5.4 s
+ROW static       frac 0.010 resident  ppl 5.474907 top1 2007/2047 kl_hf 0.001748 kl_hf_max 0.0723 kl_cbf16 0.001808 bytes/token 16220160 vram 7.152 GiB h2d 0 used_union 0.0000 resid_left 0.7617 fwd 4.7 s
+ROW trace        frac 0.010 resident  ppl 5.484585 top1 2011/2047 kl_hf 0.001718 kl_hf_max 0.0309 kl_cbf16 0.001802 bytes/token 16131470 vram 7.152 GiB h2d 0 used_union 0.6670 resid_left 0.7311 fwd 5.2 s
+ROW decdec       frac 0.030 resident  ppl 5.480847 top1 2014/2047 kl_hf 0.001697 kl_hf_max 0.0307 kl_cbf16 0.001742 bytes/token 48300672 vram 7.152 GiB h2d 0 used_union 0.9526 resid_left 0.5312 fwd 5.4 s
+ROW decdec_norm  frac 0.030 resident  ppl 5.488156 top1 2011/2047 kl_hf 0.001716 kl_hf_max 0.0678 kl_cbf16 0.001682 bytes/token 48300672 vram 7.152 GiB h2d 0 used_union 0.9526 resid_left 0.5305 fwd 5.4 s
+ROW static       frac 0.030 resident  ppl 5.475198 top1 2010/2047 kl_hf 0.001731 kl_hf_max 0.0614 kl_cbf16 0.001824 bytes/token 48267264 vram 7.183 GiB h2d 0 used_union 0.0000 resid_left 0.6913 fwd 4.7 s
+ROW trace        frac 0.030 resident  ppl 5.477491 top1 2011/2047 kl_hf 0.001643 kl_hf_max 0.0252 kl_cbf16 0.001783 bytes/token 48320636 vram 7.183 GiB h2d 0 used_union 0.8985 resid_left 0.6598 fwd 5.2 s
+ROW decdec       frac 0.100 resident  ppl 5.489291 top1 2016/2047 kl_hf 0.001729 kl_hf_max 0.1884 kl_cbf16 0.001708 bytes/token 161084160 vram 7.183 GiB h2d 0 used_union 0.9873 resid_left 0.3341 fwd 5.4 s
+ROW decdec_norm  frac 0.100 resident  ppl 5.483439 top1 2011/2047 kl_hf 0.001605 kl_hf_max 0.0307 kl_cbf16 0.001634 bytes/token 161084160 vram 7.183 GiB h2d 0 used_union 0.9854 resid_left 0.3332 fwd 5.4 s
+ROW static       frac 0.100 resident  ppl 5.480714 top1 2010/2047 kl_hf 0.001801 kl_hf_max 0.1210 kl_cbf16 0.001832 bytes/token 160972800 vram 7.339 GiB h2d 0 used_union 0.0000 resid_left 0.5416 fwd 4.8 s
+ROW trace        frac 0.100 resident  ppl 5.486704 top1 2008/2047 kl_hf 0.001668 kl_hf_max 0.0309 kl_cbf16 0.001686 bytes/token 161145640 vram 7.339 GiB h2d 0 used_union 0.9150 resid_left 0.5511 fwd 5.3 s
+ROW decdec       frac 0.300 resident  ppl 5.479828 top1 2015/2047 kl_hf 0.001639 kl_hf_max 0.1035 kl_cbf16 0.001762 bytes/token 483695104 vram 7.339 GiB h2d 0 used_union 0.9977 resid_left 0.1190 fwd 5.5 s
+ROW decdec_norm  frac 0.300 resident  ppl 5.489755 top1 2010/2047 kl_hf 0.001650 kl_hf_max 0.0393 kl_cbf16 0.001603 bytes/token 483695104 vram 7.343 GiB h2d 0 used_union 0.9969 resid_left 0.1187 fwd 5.4 s
+ROW static       frac 0.300 resident  ppl 5.476735 top1 2017/2047 kl_hf 0.001616 kl_hf_max 0.0200 kl_cbf16 0.001629 bytes/token 483360768 vram 7.714 GiB h2d 0 used_union 0.0000 resid_left 0.3610 fwd 4.9 s
+ROW trace        frac 0.300 resident  ppl 5.485832 top1 2017/2047 kl_hf 0.001691 kl_hf_max 0.0489 kl_cbf16 0.001668 bytes/token 483521440 vram 7.714 GiB h2d 0 used_union 0.7601 resid_left 0.4043 fwd 5.5 s
+ROW static       frac 0.100 streamed  ppl 5.480714 top1 2010/2047 kl_hf 0.001801 kl_hf_max 0.1210 kl_cbf16 0.001832 bytes/token 160972800 vram 5.603 GiB h2d 160972800 used_union 0.0000 resid_left -1.0000 fwd 4.0 s
+streamer: 160972800 H2D bytes over the pass, stall 0.0 ms
+EQUAL static frac 0.100 streamed vs resident: bitwise identical (losses, top-1, KL, hidden states at 49 positions x 33 slots)
+ROW decdec       frac 0.100 streamed  ppl 5.489291 top1 2016/2047 kl_hf 0.001729 kl_hf_max 0.1884 kl_cbf16 0.001708 bytes/token 161084160 vram 5.695 GiB h2d 1610612736 used_union 0.9873 resid_left -1.0000 fwd 4.7 s
+streamer: 1610612736 H2D bytes over the pass, stall 0.1 ms
+EQUAL decdec frac 0.100 streamed vs resident: bitwise identical (losses, top-1, KL, hidden states at 49 positions x 33 slots)
+VERDICT: REPORT (streamed arms bitwise equal to resident)
