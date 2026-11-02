@@ -110,7 +110,7 @@ int main(int argc, char **argv) {
            (used_after_linears - used_before_linears) / 1073741824.0);
 
     CKB(cublasCreate(&g_lin.cublas));
-    arm0_forward(&model, g_eval.tokens, pin_linear, &g_lin, g_lin.cublas, NULL, &g_result);
+    arm0_forward(&model, g_eval.tokens, pin_linear, &g_lin, g_lin.cublas, NULL, NULL, &g_result);
     size_t used_peak = vram_used();
 
     double total_ce = 0.0;
