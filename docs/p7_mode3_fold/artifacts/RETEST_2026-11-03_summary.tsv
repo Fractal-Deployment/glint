@@ -1,0 +1,64 @@
+step	rc	seconds	key_output
+build_int8_mma_gemm_test	0	4	
+build_int8_tile_gemm_test	0	3	
+build_late_plug_test	0	3	
+build_offload_stream_test	0	4	
+build_plug_evict_test	0	3	
+build_plug_streamer_test	0	2	
+build_streamer_real_test	1	3	/usr/bin/ld: tmpxft_00004d12_00000000-6_test_streamer_real_weights.cudafe1.cpp:(.text.startup+0x17dd): undefined reference to `launch_glint_htile_s3_f32_stream' collect2: error: ld returned 1 exit status 
+build_htile_test	0	2	
+build_bf16full	0	4	
+build_arm0i	0	6	
+build_plug_encode	0	1	
+build_p7_kernels	1	6	Error: Failed to fetch instance "40-Runtime-Deps" in project "default": Instance not found 
+build_mojo_forward	0	3	
+attach_selftest	0	1	P7_SELFTEST rc=0 abi=p7_attach_abi_v1 layers=4 streamed_bytes=208896 mismatches=0 nonfinite=0 nonzero=53760/53760 cpu_max_rel=0.000e+00 
+int8_mma_gemm_kernel	0	3	INT8 MMA GEMM PASSED (kernel correctness). Fidelity vs BF16 is reported above, not gated. 
+int8_tile_gemm_kernel	0	4	model.layers.31.mlp.down_proj                M=17    N=3072   K=8192  max err/absdot 1.020e-06  ok VERDICT: PASS 
+late_plug_real_weights	0	1	fused vs scratch two-pass: max|d|=3.815e-06, bitwise-different outputs=170802 of 196608 tensor=model.layers.5.mlp.down_proj.weight base_rel=6.0497e-03 plug_rel=4.1908e-04 ratio=14.4x poison_mismatches=0 PASS 
+mode2_offload_deepseek1p5b	0	10	outputs compared: 23869440 floats | bitwise mismatches=0 | non-finite=0 | all-zero layers=0 | layer0!=layer1: 1 resident 28.94 ms | streamed 152.26 ms | streamed bytes=1392082944 | stall total=115.115 ms (layer0 5.529) VRAM weight
+plug_evict_smollm2	0	0	control (poison BEFORE read): mismatched bytes = 72393495 (must be > 0) PLUG EVICT REAL PASSED. 
+plug_streamer_poison	0	1	[PASS] n_layers=3: in-order acquire/release of layers 1 and 2 [PASS] n_layers=3: next pass starts after the last release PASS: 0 failed checks 
+streamer_real_weights_phi4	127	0	with_gpu_flock: acquiring /tmp/training_orchestrator_gpu.lock wait=3600s cmd=lxc exec 40-Runtime-Deps -- bash -c /root/p7build-retest/streamer_real_test /opt/models/.hf_cache/hub/models--microsoft--Phi-4-mini-instruct/snapshots/cf
+htile_k_bounds	0	1	Testing case [Phi-4-mini hidden dim M=4 N=3072 K=3072]: M=4 N=3072 K=3072 blocksize=64 ... max_diff = 2.622604e-06 [PASS] ALL 10 TESTS PASSED GREEN. 
+arm0_bf16_anchor	0	9	PPL 5.491616 top1 2015 / 2047 VERDICT: PASS (Gate 1 Anchor Verified) 
+arm0_int8_dequant_cublas	0	5	PPL 5.501980 top1 2003 / 2047 VERDICT: REPORT ONLY (INT8 pin /home/workspace/pins/Phi-4-mini-int8-from-bf16/model.safetensors, no gate) 
+arm0_nf4	1	66	PPL 5.833352 top1 1864 / 2047 VERDICT: FAIL (Gate 1 Anchor Mismatch) 
+arm0_glint_hole_plus_plug	0	143	PPL 5.479566 top1 2007 / 2047 VERDICT: REPORT ONLY (glint hole+plug) 
+arm0_int8_tile	0	7	PPL 5.501980 top1 2003 / 2047 (97.85 %) KL(BF16 || this) per token: mean 1.246197e-03  median 1.247404e-04  p99 8.580473e-03  max 3.154420e-01 VERDICT: REPORT ONLY (INT8 pin /home/workspace/pins/Phi-4-mini-int8-from-bf16/model.saf
+arm0_int8_cublas	0	5	PPL 5.501980 top1 2003 / 2047 (97.85 %) KL(BF16 || this) per token: mean 1.246197e-03  median 1.247404e-04  p99 8.580473e-03  max 3.154420e-01 VERDICT: REPORT ONLY (INT8 pin /home/workspace/pins/Phi-4-mini-int8-from-bf16/model.saf
+arm0_int8_mma	0	6	PPL 5.496700 top1 2003 / 2047 (97.85 %) KL(BF16 || this) per token: mean 1.748171e-03  median 1.763499e-04  p99 1.518421e-02  max 2.856803e-01 VERDICT: REPORT ONLY (INT8 pin /home/workspace/pins/Phi-4-mini-int8-from-bf16/model.saf
+arm0_int8_mma-stream	0	7	PPL 5.496700 top1 2003 / 2047 (97.85 %) KL(BF16 || this) per token: mean 1.748171e-03  median 1.763499e-04  p99 1.518421e-02  max 2.856803e-01 VERDICT: REPORT ONLY (INT8 pin /home/workspace/pins/Phi-4-mini-int8-from-bf16/model.saf
+arm0_int8_mma_plugs	0	8	PPL 5.483878 top1 2004 / 2047 (97.90 %) KL(BF16 || this) per token: mean 1.240355e-03  median 1.252681e-04  p99 9.733277e-03  max 1.282670e-01 VERDICT: REPORT ONLY (INT8 pin /home/workspace/pins/Phi-4-mini-int8-from-bf16/model.saf
+arm0_int8_mma_resolve	0	7	PPL 5.495493 top1 2008 / 2047 (98.09 %) KL(BF16 || this) per token: mean 1.203674e-03  median 1.132620e-04  p99 8.510198e-03  max 3.332839e-01 VERDICT: REPORT ONLY (INT8 pin /home/workspace/pins/Phi-4-mini-int8-from-bf16/model.saf
+arm0_int8_mma_plugs_resolve	0	8	PPL 5.476566 top1 2016 / 2047 (98.49 %) KL(BF16 || this) per token: mean 4.174184e-04  median 4.668646e-05  p99 3.397146e-03  max 2.904033e-02 VERDICT: REPORT ONLY (INT8 pin /home/workspace/pins/Phi-4-mini-int8-from-bf16/model.saf
+m4_lossy_b3	0	7	PPL 5.483677 top1 2011 / 2047 (98.24 %) KL(BF16 || this) per token: mean 1.195313e-03  median 1.326438e-04  p99 8.207220e-03  max 1.466454e-01 VERDICT: REPORT ONLY (INT8 pin /home/workspace/pins/Phi-4-mini-int8-from-bf16/model.saf
+m4_lossy_b2	0	8	PPL 5.501449 top1 2010 / 2047 (98.19 %) KL(BF16 || this) per token: mean 1.144166e-03  median 1.399684e-04  p99 9.746152e-03  max 4.221333e-02 VERDICT: REPORT ONLY (INT8 pin /home/workspace/pins/Phi-4-mini-int8-from-bf16/model.saf
+plug_selection_k8	0	1	arm ppl top1_of_2047 kl_mean;
+weight_rmse_reproduce	0	32	rmse_base 0.0001983232 rmse_with_plug 1.385334e-05 
+mojo_int8_mma_vs_cuda	0	3	PURE_MOJO_PLUG_BITEXACT cuda_tensorcore_ms_per_gemm 0.15240599999999999 pure_mojo_mma_ms_per_gemm 0.2367388 slowdown 1.5533430442371037 PURE_MOJO_INT8_MMA_BITEXACT 
+mojo_prefetch_overlap	0	3	overlapped_ms     159.693708 serial_sum_ms     273.64347999999995 hidden_fraction   0.8185321273856334 
+mojo_ring_cuda_gemm	0	2	layers 8 mismatched_layers 0 MOJO_RING_CUDA_GEMM_OK 
+mojo_ring_mojo_gemm	0	7	layers 8 mismatched_layers 0 PURE_MOJO_RING_GEMM_OK 
+mojo_attach_check	0	1	P7_SELFTEST_FROM_MOJO rc=0 abi=p7_attach_abi_v1 layers=4 streamed_bytes=208896 mismatches=0 nonfinite=0 nonzero=53760/53760 cpu_max_rel=0.000e+00 MOJO_ATTACH_OK 
+mojo_layer_ops	0	6	rms_norm: elements 786432 differing 4 max_abs_diff 0.00390625 swiglu:   elements 2097152 differing 0 max_abs_diff 0.0 PURE_MOJO_LAYER_OPS_CLOSE 
+mojo_rope	0	2	rope: elements 2621440 rotated 1572864 differing 0 max_abs_diff 0.0 PURE_MOJO_ROPE_MATCH 
+mojo_attention	0	2	attention: elements 294912 differing 126655 max_abs_diff 5.319621413946152e-05 max_abs_output 1.0 PURE_MOJO_ATTENTION_CLOSE 
+mojo_forward_int8	0	48	layers done in 8.916025999 s Forward time: 37.693673237 s Perplexity: 5.48190049338596 Top-1 matches vs HF oracle: 2001 / 2047 = 97.75280898876404 % 
+mojo_forward_plugs	0	55	layers done in 10.728470005 s Forward time: 40.200278513 s Perplexity: 5.488494576673713 Top-1 matches vs HF oracle: 2006 / 2047 = 97.99706888128969 % 
+mojo_forward_resolve	0	50	layers done in 10.257735673 s Forward time: 39.80029942 s Perplexity: 5.484128766965952 Top-1 matches vs HF oracle: 2013 / 2047 = 98.3390327308256 % 
+mojo_forward_plugs_resolve	0	57	layers done in 13.896368786 s Forward time: 43.024694097 s Perplexity: 5.477230185106018 Top-1 matches vs HF oracle: 2014 / 2047 = 98.38788470933073 % 
+steps with non-zero rc: 4
+build_streamer_real_test	1	3	/usr/bin/ld: tmpxft_0000532d_00000000-6_test_streamer_real_weights.cudafe1.cpp:(.text.startup+0x528): undefined reference to `glint_encode_bf16_host' collect2: error: ld returned 1 exit status 
+build_p7_kernels	0	4	wrote /home/workspace/fractal-deployment/glint/lib/libp7_kernels.so 
+attach_selftest	0	1	P7_SELFTEST rc=0 abi=p7_attach_abi_v1 layers=4 streamed_bytes=208896 mismatches=0 nonfinite=0 nonzero=53760/53760 cpu_max_rel=0.000e+00 
+streamer_real_weights_phi4	127	0	with_gpu_flock: acquiring /tmp/training_orchestrator_gpu.lock wait=3600s cmd=lxc exec 40-Runtime-Deps -- bash -c /root/p7build-retest/streamer_real_test /opt/models/.hf_cache/hub/models--microsoft--Phi-4-mini-instruct/snapshots/cf
+plug_selection_k8	0	0	scripts/run_plug_selection.sh: line 24: /home/workspace/lakes/p7_glint/retest_20261103_run/plug_selection_k8.tsv: Permission denied;arm ppl top1_of_2047 kl_mean;
+mojo_int8_mma_vs_cuda	0	2	PURE_MOJO_PLUG_BITEXACT cuda_tensorcore_ms_per_gemm 0.17530859999999998 pure_mojo_mma_ms_per_gemm 0.2532125 slowdown 1.444381507809657 PURE_MOJO_INT8_MMA_BITEXACT 
+mojo_ring_cuda_gemm	0	2	layers 8 mismatched_layers 0 MOJO_RING_CUDA_GEMM_OK 
+mojo_attach_check	0	2	P7_SELFTEST_FROM_MOJO rc=0 abi=p7_attach_abi_v1 layers=4 streamed_bytes=208896 mismatches=0 nonfinite=0 nonzero=53760/53760 cpu_max_rel=0.000e+00 MOJO_ATTACH_OK 
+steps with non-zero rc: 2
+build_streamer_real_test	0	4	
+streamer_real_weights_phi4	0	4	  model.layers.1.mlp.gate_up_proj.weight   host-decode max|d|=1.062e-05 worst d/bound=7.328e-04 [PASS]  vs-BF16 rel_fro=6.5470e-03   model.layers.1.mlp.down_proj.weight      host-decode max|d|=2.250e-05 worst d/bound=1.979e-04 [PA
+plug_selection_k8	0	216	arm ppl top1_of_2047 kl_mean;none 5.496700 2003 1.748171e-03;static_uniform 5.496396 2000 1.639402e-03;static_first 5.487838 2006 1.479617e-03;static_last 5.488072 1997 1.666888e-03;oracle 5.491655 1999 1.240553e-03;predicted 5.48
+steps with non-zero rc: 0
