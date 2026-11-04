@@ -1,0 +1,10 @@
+date_utc: 2026-11-04T01:15:04Z
+boot: 2026-11-03 13:36:20
+kernel: 7.0.0-42-generic
+NVIDIA GeForce RTX 3060, 595.99.02, 94.04.71.40.09, 12288 MiB
+Driver Version                                         : 595.99.02
+CUDA Version                                           : 13.2
+    VBIOS Version                                      : 94.04.71.40.09
+    GSP Firmware Version                               : 595.99.02
+container: 595.99.02, 94.04.71.40.09
+glint_commit: 813714ecfa00b48c9c356922fe89835dab2e47c0

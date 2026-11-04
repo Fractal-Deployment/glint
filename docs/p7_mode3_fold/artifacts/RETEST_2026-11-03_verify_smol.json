@@ -1,0 +1,2758 @@
+{
+  "schema": "glint_verify_v1",
+  "pin": "/home/workspace/pins/SmolLM2-135M-glint-from-bf16",
+  "backend": "cuda_bf16",
+  "n_modules": 211,
+  "n_failed": 0,
+  "rmse_mean": 0.0012712879447563123,
+  "rmse_max": 0.002817670491566938,
+  "parity_checked": true,
+  "cuda_expand_checked": false,
+  "ok": true,
+  "failures": [],
+  "modules": [
+    {
+      "module": "model.embed_tokens",
+      "ok": true,
+      "rmse": 0.0010712974342739696,
+      "rel_rmse": 0.00795539266570919,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.0.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0012761179842439587,
+      "rel_rmse": 0.006631273022899434,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.0.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0012037646108036392,
+      "rel_rmse": 0.006558213234679903,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.0.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0012392164905724822,
+      "rel_rmse": 0.0065586316093306785,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.0.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.002817670491566938,
+      "rel_rmse": 0.007130359128987336,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.0.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0004689423062381437,
+      "rel_rmse": 0.007471670037505312,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.0.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.00204325014402375,
+      "rel_rmse": 0.007249058297906204,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.0.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0003134388015821242,
+      "rel_rmse": 0.007045585850121503,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.1.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.001199966707334918,
+      "rel_rmse": 0.00659255679913524,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.1.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0013240837842909737,
+      "rel_rmse": 0.006524781128567461,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.1.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.001172048248046657,
+      "rel_rmse": 0.006532331190487226,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.1.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0018317210938559253,
+      "rel_rmse": 0.006604975436055673,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.1.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0009090329680390444,
+      "rel_rmse": 0.006607212512422391,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.1.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.001613076223483549,
+      "rel_rmse": 0.006589231191696688,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.1.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0008158447327426839,
+      "rel_rmse": 0.006651762280331314,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.10.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.001311849956813451,
+      "rel_rmse": 0.006658614541780778,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.10.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0011783026304119034,
+      "rel_rmse": 0.006553684781730915,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.10.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0013308620200412136,
+      "rel_rmse": 0.006590213315728522,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.10.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0014807474996161528,
+      "rel_rmse": 0.006556116661154272,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.10.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0010534627317250447,
+      "rel_rmse": 0.006495375944795677,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.10.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.001433967030848822,
+      "rel_rmse": 0.006590075243370185,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.10.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0010679796196032703,
+      "rel_rmse": 0.006637903152351113,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.11.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0013307511317322538,
+      "rel_rmse": 0.006719065375927919,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.11.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0011515709381681363,
+      "rel_rmse": 0.006550918815947042,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.11.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.001334675086491991,
+      "rel_rmse": 0.006582603636652089,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.11.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0015050566452472353,
+      "rel_rmse": 0.006570533390669866,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.11.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0010748939212872764,
+      "rel_rmse": 0.006564815677788291,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.11.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.0014717469433523373,
+      "rel_rmse": 0.006733220478455936,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.11.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0010983237363745614,
+      "rel_rmse": 0.006749601524377573,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.12.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0013041611247238188,
+      "rel_rmse": 0.006703721801249651,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.12.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0011783196787737947,
+      "rel_rmse": 0.006564400765288357,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.12.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.001321443592310832,
+      "rel_rmse": 0.0066018986335816465,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.12.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0014411766497827788,
+      "rel_rmse": 0.006565004465240878,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.12.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0010579719181748079,
+      "rel_rmse": 0.00657037346599446,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.12.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.001400626333402639,
+      "rel_rmse": 0.0065572671464075504,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.12.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0011181883038149047,
+      "rel_rmse": 0.0065932193085973135,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.13.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0012453957782375055,
+      "rel_rmse": 0.006667349038554004,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.13.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0012354350928377004,
+      "rel_rmse": 0.0065825662182466506,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.13.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0012780906702451144,
+      "rel_rmse": 0.006575368039515636,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.13.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0015066651775210147,
+      "rel_rmse": 0.0065499422226400345,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.13.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0010439730850282792,
+      "rel_rmse": 0.00652963728858292,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.13.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.0014919314452724113,
+      "rel_rmse": 0.0066342082729200355,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.13.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0010742300359260727,
+      "rel_rmse": 0.0065987896283086645,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.14.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.001260118350532742,
+      "rel_rmse": 0.006757081274863995,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.14.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0012434868340741561,
+      "rel_rmse": 0.006621893040441797,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.14.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.001282985540401205,
+      "rel_rmse": 0.0066018313852335845,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.14.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0013272762376465152,
+      "rel_rmse": 0.006757945159643411,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.14.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0011111076223635887,
+      "rel_rmse": 0.006519784501227753,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.14.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.0013046469968918057,
+      "rel_rmse": 0.006678801009846578,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.14.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0012019347064203367,
+      "rel_rmse": 0.00667786397092407,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.15.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0012511947002952228,
+      "rel_rmse": 0.006790678169774646,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.15.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0012867998400413934,
+      "rel_rmse": 0.006686491429305183,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.15.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.00129059266177509,
+      "rel_rmse": 0.006643539121083983,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.15.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0013186063852175588,
+      "rel_rmse": 0.006661528375018421,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.15.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.001123003141145297,
+      "rel_rmse": 0.006577715804817131,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.15.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.0013014344652563588,
+      "rel_rmse": 0.00669502579446242,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.15.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0011809660759010483,
+      "rel_rmse": 0.006694241074965064,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.16.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0012519364890855188,
+      "rel_rmse": 0.006693083955410594,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.16.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0012721993238675618,
+      "rel_rmse": 0.006637058434323681,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.16.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0013066427592691695,
+      "rel_rmse": 0.006630964020696006,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.16.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0014834799201572093,
+      "rel_rmse": 0.006552944542237869,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.16.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0010895441489401096,
+      "rel_rmse": 0.006542732038513179,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.16.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.001417852979517674,
+      "rel_rmse": 0.006597004461167199,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.16.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0011749201367357261,
+      "rel_rmse": 0.006904972963152176,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.17.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.001262486530268616,
+      "rel_rmse": 0.006684956968531114,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.17.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0012510123817395845,
+      "rel_rmse": 0.006658852920890238,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.17.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.001319042863415846,
+      "rel_rmse": 0.006640601077307263,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.17.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0012900745280273853,
+      "rel_rmse": 0.006907506959261011,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.17.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0011048562334116587,
+      "rel_rmse": 0.006544517483202269,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.17.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.0013327744392413034,
+      "rel_rmse": 0.0070068749517381524,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.17.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0012230936202487714,
+      "rel_rmse": 0.006660263544537836,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.18.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0012383456645541453,
+      "rel_rmse": 0.006664122013006654,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.18.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0012420460679285563,
+      "rel_rmse": 0.0066730445464936545,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.18.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0012988558565394622,
+      "rel_rmse": 0.006644320537443061,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.18.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0012189769814417053,
+      "rel_rmse": 0.006831623359933737,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.18.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.001118461665413867,
+      "rel_rmse": 0.006498512661588694,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.18.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.001242132764787806,
+      "rel_rmse": 0.006857884954361937,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.18.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0012669915158459919,
+      "rel_rmse": 0.007116533378203894,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.19.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.001250137896859997,
+      "rel_rmse": 0.006690659187482524,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.19.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0012729182244241093,
+      "rel_rmse": 0.006714857488973703,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.19.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0013161998940907538,
+      "rel_rmse": 0.006681825561888829,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.19.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0011239225797071428,
+      "rel_rmse": 0.006613411651623073,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.19.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0013113485214965165,
+      "rel_rmse": 0.006583595197300582,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.19.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.001276843820415655,
+      "rel_rmse": 0.007074802699920639,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.19.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0014904433014664585,
+      "rel_rmse": 0.006593650068943932,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.2.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.001203882895911199,
+      "rel_rmse": 0.006638535569690364,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.2.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0012991827062219796,
+      "rel_rmse": 0.006545276868779018,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.2.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0011874061056790495,
+      "rel_rmse": 0.006533792298010969,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.2.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0017950638328661803,
+      "rel_rmse": 0.006637740774004616,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.2.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0008556725932913359,
+      "rel_rmse": 0.006670695059356342,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.2.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.0015592840043010762,
+      "rel_rmse": 0.0066511711008960485,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.2.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0007356242791742631,
+      "rel_rmse": 0.00659905920496018,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.20.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0012821436367043226,
+      "rel_rmse": 0.006727457840468743,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.20.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0012364136395655327,
+      "rel_rmse": 0.006741136063690217,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.20.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0013344355966669649,
+      "rel_rmse": 0.006683021748543702,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.20.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0010980875715642844,
+      "rel_rmse": 0.00678132613651132,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.20.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0012266763907595097,
+      "rel_rmse": 0.006521778428789275,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.20.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.0012224849505811316,
+      "rel_rmse": 0.006680806596859973,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.20.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0015011705509130442,
+      "rel_rmse": 0.007141570070566413,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.21.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0012780334755258067,
+      "rel_rmse": 0.006636357360055986,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.21.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.001238406656693069,
+      "rel_rmse": 0.006700960707244305,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.21.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0013254684585819047,
+      "rel_rmse": 0.006612373059338422,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.21.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0011261170058523896,
+      "rel_rmse": 0.006640008629788894,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.21.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0012209411069561383,
+      "rel_rmse": 0.0065639862850441965,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.21.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.0012083125111043988,
+      "rel_rmse": 0.006669964056124406,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.21.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0014057188241686385,
+      "rel_rmse": 0.0067522828803721294,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.22.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0013029099561890358,
+      "rel_rmse": 0.0066510444138465534,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.22.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0012285603278394436,
+      "rel_rmse": 0.0067405867101040864,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.22.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0013491921923185848,
+      "rel_rmse": 0.006633128218136503,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.22.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.00114296070977579,
+      "rel_rmse": 0.006637014891944729,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.22.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0012863170020327806,
+      "rel_rmse": 0.006548939636386109,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.22.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.001225719468434616,
+      "rel_rmse": 0.006662406493216918,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.22.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0014889680762814276,
+      "rel_rmse": 0.006724835488076331,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.23.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0013003734614345926,
+      "rel_rmse": 0.0066074459516905215,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.23.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0011880350726268623,
+      "rel_rmse": 0.00659693404440513,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.23.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0013577636637243456,
+      "rel_rmse": 0.006591537570850265,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.23.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0010752763776306488,
+      "rel_rmse": 0.006811700158782289,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.23.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0015531005689344768,
+      "rel_rmse": 0.006492610781576363,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.23.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.0011599123713371669,
+      "rel_rmse": 0.006797626796734592,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.23.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0018507515165872037,
+      "rel_rmse": 0.007310001601417932,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.24.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0013246562130150475,
+      "rel_rmse": 0.006621126102491719,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.24.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.001188033383383639,
+      "rel_rmse": 0.0065444626260146065,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.24.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0013648197474524317,
+      "rel_rmse": 0.006575898909718314,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.24.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0009604850689052477,
+      "rel_rmse": 0.006737048279147532,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.24.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0013848692826341595,
+      "rel_rmse": 0.006552579374610134,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.24.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.00113643699088594,
+      "rel_rmse": 0.006728054428395825,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.24.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0018746109195636256,
+      "rel_rmse": 0.007035432246970931,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.25.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0013192231243891646,
+      "rel_rmse": 0.0065371470072359324,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.25.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0011869192804223395,
+      "rel_rmse": 0.006524170831218244,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.25.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0013468291224075397,
+      "rel_rmse": 0.006508644173780846,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.25.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.001093496784005636,
+      "rel_rmse": 0.006585245522450667,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.25.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0013998088069074972,
+      "rel_rmse": 0.006534833307629273,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.25.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.0011891159352852034,
+      "rel_rmse": 0.006613276917062013,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.25.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0016398140575456573,
+      "rel_rmse": 0.006596514791839753,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.26.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0013227377751099416,
+      "rel_rmse": 0.006556756070080874,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.26.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.001181536337123719,
+      "rel_rmse": 0.0065401501205375155,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.26.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0013514514629783356,
+      "rel_rmse": 0.006504841679383365,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.26.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0009913760739766353,
+      "rel_rmse": 0.006714134396622911,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.26.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0014941323880914232,
+      "rel_rmse": 0.006498482151441964,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.26.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.0010978343099831722,
+      "rel_rmse": 0.006639107315933703,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.26.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.00180857308335529,
+      "rel_rmse": 0.006638516952577062,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.27.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0013243652596548314,
+      "rel_rmse": 0.006571021566286581,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.27.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0011934539309973278,
+      "rel_rmse": 0.0066667458976721475,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.27.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0013864399369387622,
+      "rel_rmse": 0.006515176402970318,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.27.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0009803561639071697,
+      "rel_rmse": 0.006674571936775213,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.27.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0013260611531069602,
+      "rel_rmse": 0.0065288327519798205,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.27.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.0011085410114176331,
+      "rel_rmse": 0.0066715900300123206,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.27.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0016558267503894,
+      "rel_rmse": 0.006563718187550992,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.28.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0013123645898602196,
+      "rel_rmse": 0.006557026873939433,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.28.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0011688882733637855,
+      "rel_rmse": 0.006569564327506598,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.28.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.001413498359394089,
+      "rel_rmse": 0.006501848270858741,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.28.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0009231855485231731,
+      "rel_rmse": 0.006733331115216468,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.28.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0014581395872022259,
+      "rel_rmse": 0.006514544370864623,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.28.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.0010011435457486049,
+      "rel_rmse": 0.006681881870046207,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.28.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.001862246919504997,
+      "rel_rmse": 0.00658852253115381,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.29.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0012234876294141136,
+      "rel_rmse": 0.006718716179975271,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.29.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0011473788266197367,
+      "rel_rmse": 0.0065993533721040425,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.29.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0014005762382617527,
+      "rel_rmse": 0.006542949518087513,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.29.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0008728933627989739,
+      "rel_rmse": 0.006697600853193846,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.29.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0014582570692799786,
+      "rel_rmse": 0.00653271891356219,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.29.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.00101152574519404,
+      "rel_rmse": 0.00680144316290503,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.29.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.001912473088418032,
+      "rel_rmse": 0.006656684893545298,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.3.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0012057839201006896,
+      "rel_rmse": 0.006559178632738458,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.3.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0012875587527850837,
+      "rel_rmse": 0.006505103820276779,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.3.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0012038135948127591,
+      "rel_rmse": 0.006531986283289456,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.3.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.001629248245993814,
+      "rel_rmse": 0.006546502636170791,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.3.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0010036735991537794,
+      "rel_rmse": 0.006573184075659651,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.3.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.0014698414809617387,
+      "rel_rmse": 0.0066361436071463225,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.3.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.000986780071318081,
+      "rel_rmse": 0.006797661542957239,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.4.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0011869673895561843,
+      "rel_rmse": 0.006557483905861898,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.4.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.001280796387202387,
+      "rel_rmse": 0.006522735955936011,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.4.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0011988976175968113,
+      "rel_rmse": 0.0065409003422404926,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.4.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0016187438916008756,
+      "rel_rmse": 0.006590166019794248,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.4.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.001011569993544215,
+      "rel_rmse": 0.0065435524890486586,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.4.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.0014576307377888189,
+      "rel_rmse": 0.006601397236708055,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.4.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0010011973880050722,
+      "rel_rmse": 0.006700548505782229,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.5.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0011863693671080454,
+      "rel_rmse": 0.006545661764058736,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.5.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.001267300964478078,
+      "rel_rmse": 0.00651102327684264,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.5.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0012049510680276008,
+      "rel_rmse": 0.0065269160496294575,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.5.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0015641021992971646,
+      "rel_rmse": 0.006779525052413413,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.5.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0010135067308744846,
+      "rel_rmse": 0.006563141861733923,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.5.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.0014097134314850811,
+      "rel_rmse": 0.006694576158447765,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.5.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0010372227254354484,
+      "rel_rmse": 0.006594055541835691,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.6.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0012190797559812842,
+      "rel_rmse": 0.0065612075148143885,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.6.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0012655565882114784,
+      "rel_rmse": 0.006541268197986361,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.6.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0012434853296036184,
+      "rel_rmse": 0.006576561715228054,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.6.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0015589438204891607,
+      "rel_rmse": 0.006596272311708613,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.6.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0010270019479007425,
+      "rel_rmse": 0.006544682336766924,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.6.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.0013968310772889522,
+      "rel_rmse": 0.0065917697892865145,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.6.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0010556409967525978,
+      "rel_rmse": 0.006598110548086722,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.7.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0012299740992390683,
+      "rel_rmse": 0.006570215164103916,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.7.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0012495676570961815,
+      "rel_rmse": 0.006541762495403776,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.7.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0012541235659443042,
+      "rel_rmse": 0.006552255501008478,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.7.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0013553550824585924,
+      "rel_rmse": 0.006727029204054748,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.7.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0010581757913113142,
+      "rel_rmse": 0.006555677562403117,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.7.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.0013059070164087758,
+      "rel_rmse": 0.0066895283628530516,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.7.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0011249697420954734,
+      "rel_rmse": 0.006630373521483237,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.8.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.0012546342316894416,
+      "rel_rmse": 0.006607948205623695,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.8.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0012241544528870387,
+      "rel_rmse": 0.006529740941841513,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.8.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.001283294290436768,
+      "rel_rmse": 0.006566275225157955,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.8.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0014237690747374064,
+      "rel_rmse": 0.006729508922314166,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.8.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.0010143858052207627,
+      "rel_rmse": 0.006541215923794907,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.8.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.0013317093080689067,
+      "rel_rmse": 0.006696471332183486,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.8.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0010628256450329397,
+      "rel_rmse": 0.0065909985114967935,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.9.mlp.down_proj",
+      "ok": true,
+      "rmse": 0.001301788156257079,
+      "rel_rmse": 0.006662981944423658,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.9.mlp.gate_proj",
+      "ok": true,
+      "rmse": 0.0011945366434955806,
+      "rel_rmse": 0.006573405134829698,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.9.mlp.up_proj",
+      "ok": true,
+      "rmse": 0.0013167381007162205,
+      "rel_rmse": 0.0065548467128991195,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.9.self_attn.k_proj",
+      "ok": true,
+      "rmse": 0.0014682686053171673,
+      "rel_rmse": 0.00668977607958805,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.9.self_attn.o_proj",
+      "ok": true,
+      "rmse": 0.000977115372051842,
+      "rel_rmse": 0.006527058307113902,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.9.self_attn.q_proj",
+      "ok": true,
+      "rmse": 0.0014237004129932216,
+      "rel_rmse": 0.006618297033526151,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    },
+    {
+      "module": "model.layers.9.self_attn.v_proj",
+      "ok": true,
+      "rmse": 0.0009933580553984048,
+      "rel_rmse": 0.006612524748263922,
+      "parity": {
+        "hole_first_diff": null,
+        "plug_first_diff": null,
+        "absmax_first_diff": null,
+        "hole_bytes_differ": 0,
+        "plug_bytes_differ": 0
+      }
+    }
+  ]
+}
