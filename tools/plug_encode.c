@@ -5,7 +5,8 @@
  * Layout per linear: <name>.plug_q4 (U8, ceil(n/2) bytes, element 2i in the low nibble, biased +8)
  *                    <name>.plug_scale (F32, one per 64 weights, same block order as the base).
  * Plug bytes are n/2 + n/16 per linear, i.e. 0.5625 B/elem against the base's 1.0625.
- * Usage: plug_encode PIN.safetensors BF16_MODEL_DIR OUT.safetensors > error_report.json
+ * Usage: plug_encode PIN.safetensors BF16_MODEL_DIR OUT.safetensors [BITS=4] > error_report.json
+ * BITS (2..4) is the M4-LOSSY knob: residual values are clamped to +-(2^(BITS-1)-1) but still stored in a nibble.
  * Reports per-linear RMSE vs BF16 for base alone and base+plug. Exit 0 ok, 3 setup error. */
 #include "safetensors_c.h"
 #include <dirent.h>
@@ -19,7 +20,10 @@ static float bf2f(uint16_t b) { uint32_t u = (uint32_t)b << 16; float f; memcpy(
 typedef struct { char name[256]; uint64_t n; uint8_t *q4; float *sp; double rb, rp, ref2; } Plug;
 
 int main(int argc, char **argv) {
-    if (argc != 4) { fprintf(stderr, "usage: %s PIN MODEL_DIR OUT\n", argv[0]); return 3; }
+    if (argc != 4 && argc != 5) { fprintf(stderr, "usage: %s PIN MODEL_DIR OUT [BITS=4]\n", argv[0]); return 3; }
+    const int bits = argc == 5 ? atoi(argv[4]) : 4;
+    if (bits < 2 || bits > 4) { fprintf(stderr, "BITS must be 2..4\n"); return 3; }
+    const int qmax = (1 << (bits - 1)) - 1;
     SafeTensors pin;
     if (safetensors_open(&pin, argv[1])) { fprintf(stderr, "cannot open pin\n"); return 3; }
     DIR *d = opendir(argv[2]);
@@ -44,10 +48,10 @@ int main(int argc, char **argv) {
             for (uint64_t b = 0; b < nb; b++) {
                 double am = 0;
                 for (uint64_t j = b * 64; j < n && j < (b + 1) * 64; j++) { double r = fabs(bf2f(w[j]) - (double)qq[j] * sb[b]); if (r > am) am = r; }
-                float sp = am > 0 ? (float)(am / 7.0) : 1.f; p->sp[b] = sp;
+                float sp = am > 0 ? (float)(am / (double)qmax) : 1.f; p->sp[b] = sp;
                 for (uint64_t j = b * 64; j < n && j < (b + 1) * 64; j++) {
                     double r = bf2f(w[j]) - (double)qq[j] * sb[b];
-                    int v = (int)rint(r / sp); v = v > 7 ? 7 : (v < -7 ? -7 : v);
+                    int v = (int)rint(r / sp); v = v > qmax ? qmax : (v < -qmax ? -qmax : v);
                     p->q4[j >> 1] |= (uint8_t)((v + 8) << ((j & 1) * 4));
                     double e0 = r, e1 = r - (double)v * sp;
                     p->rb += e0 * e0; p->rp += e1 * e1; p->ref2 += (double)bf2f(w[j]) * bf2f(w[j]);
