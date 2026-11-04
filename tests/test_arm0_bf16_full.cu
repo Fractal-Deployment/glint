@@ -99,7 +99,7 @@ static void glint_upload(const SafeTensors *a, const SafeTensors *b, int l, int 
  * ARM0_DEMAND_ONLY_LAYER (restrict one layer, others full), ARM0_DEMAND_STATIC_OUT/IN (calibration file),
  * ARM0_DEMAND_STATS (json: bytes fetched, per-layer churn and predictability). */
 enum { DEM_MAXBLK = 128, DEM_CALIB_TOKENS = 256 };
-static int g_demand = 0, g_rule = 0, g_only_layer = -1, g_dem_m = 0;
+static int g_demand = 0, g_rule = 0, g_only_layer = -1, g_dem_m = 0, g_mask_parent = 0, g_gran_ch = 0;
 static float g_frac = 1.0f;
 static unsigned g_seed = 42;
 static const char *g_static_out = NULL;
@@ -155,6 +155,39 @@ __global__ void k_dem_select(const __nv_bfloat16 *x, __nv_bfloat16 *xm, uint8_t 
     __syncthreads();
     for (int c = threadIdx.x; c < k_in; c += blockDim.x) xm[(size_t)t * k_in + c] = sl[c >> 6] ? xr[c] : __float2bfloat16(0.f);
 }
+/* Channel granularity (spec: act and random only). Keeps the nsel input channels of each token with the largest key
+ * (|x| for act, a hash for random), found by a binary search on the float bit pattern; ties may keep a few more.
+ * grid = tokens, block 256. acc[0] += kept channels. */
+__global__ void k_dem_select_ch(const __nv_bfloat16 *x, __nv_bfloat16 *xm, int k_in, int nsel, int rule, unsigned seed, unsigned salt, double *acc) {
+    int t = blockIdx.x; const __nv_bfloat16 *xr = x + (size_t)t * k_in;
+    __shared__ int cnt; __shared__ unsigned lo, hi;
+    if (threadIdx.x == 0) { lo = 0; hi = 0x7f800000u; }
+    __syncthreads();
+    for (int it = 0; it < 32; it++) {
+        if (lo >= hi) break;
+        unsigned mid = lo + (hi - lo + 1) / 2;
+        if (threadIdx.x == 0) cnt = 0;
+        __syncthreads();
+        int c = 0;
+        for (int i = threadIdx.x; i < k_in; i += blockDim.x) {
+            unsigned key = rule == 0 ? __float_as_uint(fabsf(__bfloat162float(xr[i]))) : __float_as_uint(dem_hash01(seed, salt, (unsigned)t, (unsigned)i));
+            c += key >= mid;
+        }
+        atomicAdd(&cnt, c);
+        __syncthreads();
+        if (threadIdx.x == 0) { if (cnt >= nsel) lo = mid; else hi = mid - 1; }
+        __syncthreads();
+    }
+    int kept = 0;
+    for (int i = threadIdx.x; i < k_in; i += blockDim.x) {
+        unsigned key = rule == 0 ? __float_as_uint(fabsf(__bfloat162float(xr[i]))) : __float_as_uint(dem_hash01(seed, salt, (unsigned)t, (unsigned)i));
+        bool keep = key >= lo; kept += keep;
+        xm[(size_t)t * k_in + i] = keep ? xr[i] : __float2bfloat16(0.f);
+    }
+    __shared__ int ktot; if (threadIdx.x == 0) ktot = 0; __syncthreads();
+    atomicAdd(&ktot, kept); __syncthreads();
+    if (threadIdx.x == 0) atomicAdd(&acc[0], (double)ktot);
+}
 __global__ void k_dem_stats(const uint8_t *sel, int nblk, double *acc) { /* grid = tokens, block 128 */
     int t = blockIdx.x; __shared__ int cnt[3];
     if (threadIdx.x == 0) cnt[0] = cnt[1] = cnt[2] = 0;
@@ -196,6 +229,9 @@ static void demand_init() {
     if (getenv("ARM0_DEMAND_SEED")) g_seed = (unsigned)atoi(getenv("ARM0_DEMAND_SEED"));
     if (getenv("ARM0_DEMAND_ONLY_LAYER")) g_only_layer = atoi(getenv("ARM0_DEMAND_ONLY_LAYER"));
     g_static_out = getenv("ARM0_DEMAND_STATIC_OUT");
+    g_mask_parent = getenv("ARM0_DEMAND_MASK_PARENT") && atoi(getenv("ARM0_DEMAND_MASK_PARENT")) == 1;
+    g_gran_ch = getenv("ARM0_DEMAND_GRAN") && !strcmp(getenv("ARM0_DEMAND_GRAN"), "channel");
+    if (g_gran_ch && g_rule != 0 && g_rule != 1) setup_fail("channel granularity supports rules act and random only");
     if (g_rule == 2) {
         const char *in = getenv("ARM0_DEMAND_STATIC_IN"); if (!in) setup_fail("rule static needs ARM0_DEMAND_STATIC_IN");
         FILE *f = fopen(in, "rb"); if (!f) setup_fail("cannot read %s", in);
@@ -209,13 +245,16 @@ static void demand_linear(cublasHandle_t cb, int layer, int which, const __nv_bf
     g_dem_m = m; GlintLin &g = g_gl[layer][which];
     k_dem_decode<<<(unsigned)((n + 255) / 256), 256>>>(g.hole, g.plug, g.am, g_wp, g_wd, n);
     float one = 1.0f, zero = 0.0f;
-    CKB(cublasGemmEx(cb, CUBLAS_OP_T, CUBLAS_OP_N, n_out, m, k_in, &one, g_wp, CUDA_R_16BF, k_in, x, CUDA_R_16BF, k_in, &zero, y, CUDA_R_32F, n_out, CUDA_R_32F, CUBLAS_GEMM_DEFAULT));
     if (g_static_out) k_dem_static_acc<<<nblk, 128>>>(x, m, k_in, g_static_dev + ((size_t)layer * ARM0_N_LINEARS + which) * DEM_MAXBLK);
     float f = (g_only_layer >= 0 && layer != g_only_layer) ? 1.0f : g_frac;
-    if (f <= 0.0f) return;
+    if (g_mask_parent && f <= 0.0f) setup_fail("ARM0_DEMAND_MASK_PARENT needs f > 0");
     const __nv_bfloat16 *xin = x;
-    if (f >= 1.0f) g_host_sel[layer][which] += (double)m * nblk;
-    else {
+    if (f >= 1.0f) g_host_sel[layer][which] += (double)m * (g_gran_ch ? k_in : nblk);
+    else if (f > 0.0f && g_gran_ch) {
+        int nsel = (int)ceil((double)f * k_in - 1e-6); if (nsel < 1) nsel = 1; if (nsel > k_in) nsel = k_in;
+        k_dem_select_ch<<<m, 256>>>(x, g_xm, k_in, nsel, g_rule, g_seed, (unsigned)(layer * 8 + which), g_dstats + ((size_t)layer * ARM0_N_LINEARS + which) * 4);
+        xin = g_xm;
+    } else if (f > 0.0f) {
         int nsel = (int)ceil((double)f * nblk - 1e-6); if (nsel < 1) nsel = 1; if (nsel > nblk) nsel = nblk;
         if (g_rule == 3) k_dem_colnorm<<<nblk, 256>>>(g_wd, n_out, k_in, g_colnorm);
         const float *stat = g_static_dev + ((size_t)layer * ARM0_N_LINEARS + which) * DEM_MAXBLK;
@@ -223,7 +262,12 @@ static void demand_linear(cublasHandle_t cb, int layer, int which, const __nv_bf
         k_dem_stats<<<m, 128>>>(g_sel, nblk, g_dstats + ((size_t)layer * ARM0_N_LINEARS + which) * 4);
         xin = g_xm;
     }
-    CKB(cublasGemmEx(cb, CUBLAS_OP_T, CUBLAS_OP_N, n_out, m, k_in, &one, g_wd, CUDA_R_16BF, k_in, xin, CUDA_R_16BF, k_in, &one, y, CUDA_R_32F, n_out, CUDA_R_32F, CUBLAS_GEMM_DEFAULT));
+    /* ARM0_DEMAND_MASK_PARENT=1 (exploratory, not in the spec): the parent GEMM sees the masked input too, so low-activation
+     * channels are skipped for the whole linear (a TEAL-style activation-sparsity test), not only for the plug correction. */
+    const __nv_bfloat16 *xp = (g_mask_parent && f < 1.0f) ? xin : x;
+    CKB(cublasGemmEx(cb, CUBLAS_OP_T, CUBLAS_OP_N, n_out, m, k_in, &one, g_wp, CUDA_R_16BF, k_in, xp, CUDA_R_16BF, k_in, &zero, y, CUDA_R_32F, n_out, CUDA_R_32F, CUBLAS_GEMM_DEFAULT));
+    if (f > 0.0f)
+        CKB(cublasGemmEx(cb, CUBLAS_OP_T, CUBLAS_OP_N, n_out, m, k_in, &one, g_wd, CUDA_R_16BF, k_in, xin, CUDA_R_16BF, k_in, &one, y, CUDA_R_32F, n_out, CUDA_R_32F, CUBLAS_GEMM_DEFAULT));
 }
 static void demand_report() {
     CK(cudaDeviceSynchronize());
@@ -235,7 +279,7 @@ static void demand_report() {
     for (int l = 0; l < N_LAYERS; l++) {
         double jac = 0, rec = 0, pairs = 0, lsel = 0, lall = 0;
         for (int j = 0; j < ARM0_N_LINEARS; j++) {
-            const double *a = &h[((size_t)l * ARM0_N_LINEARS + j) * 4]; int nblk = ARM0_LINEAR[j].k_in / 64;
+            const double *a = &h[((size_t)l * ARM0_N_LINEARS + j) * 4]; int nblk = g_gran_ch ? ARM0_LINEAR[j].k_in : ARM0_LINEAR[j].k_in / 64;
             double pb = (double)ARM0_LINEAR[j].n_out * ARM0_LINEAR[j].k_in / 2.0, frac = (a[0] + g_host_sel[l][j]) / ((double)m * nblk);
             sel_bytes += frac * pb; all_bytes += pb; lsel += frac * pb; lall += pb; jac += a[1]; rec += a[2]; pairs += a[3];
         }
