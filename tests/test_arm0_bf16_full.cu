@@ -69,7 +69,8 @@ static GlintLin g_gl[N_LAYERS][ARM0_N_LINEARS];
 static uint8_t *g_zero_plug = NULL;
 /* --glint-stream PINDIR: hole resident, plugs staged in pinned host RAM and brought in one layer ahead through the
  * 2-slot ring (glint_plug_streamer). One layer's plug is its four linears back to back (QKV, O, GATE_UP, DOWN). */
-static int g_stream = 0;
+static int g_stream = 0, g_res_layers = 0; /* ARM0_STREAM_RESIDENT_LAYERS=N: the first N layers keep their plug in VRAM, the rest stream */
+static size_t g_vram_base_free = 0;
 static GlintPlugStreamer *g_streamer = NULL;
 static cudaStream_t g_copy_stream = NULL;
 static const uint8_t *g_plug_src[N_LAYERS][ARM0_N_LINEARS];
@@ -85,7 +86,7 @@ static void glint_upload(const SafeTensors *a, const SafeTensors *b, int l, int 
     GlintLin &g = g_gl[l][j];
     CK(cudaMalloc(&g.hole, nb)); CK(cudaMemcpy(g.hole, eh->data, nb, cudaMemcpyHostToDevice));
     CK(cudaMalloc(&g.am, ab)); CK(cudaMemcpy(g.am, ea->data, ab, cudaMemcpyHostToDevice));
-    if (g_stream) { /* plug stays on the host; the ring brings it in */
+    if (g_stream && l >= g_res_layers) { /* plug stays on the host; the ring brings it in */
         g_plug_src[l][j] = (const uint8_t *)ep->data; g_plug_off[l][j] = g_layer_bytes[l]; g_layer_bytes[l] += nb; g.plug = NULL;
     } else if (g_hole_only) { if (!g_zero_plug) { CK(cudaMalloc(&g_zero_plug, 8192ull * 3072 / 2 * 2)); CK(cudaMemset(g_zero_plug, 0, 8192ull * 3072)); } g.plug = g_zero_plug; }
     else { CK(cudaMalloc(&g.plug, nb)); CK(cudaMemcpy(g.plug, ep->data, nb, cudaMemcpyHostToDevice)); }
@@ -305,15 +306,15 @@ static void cublas_linear(void *ctx, int layer, Arm0Linear which, const __nv_bfl
     if (g_glint) {
         const GlintLin &g = g_gl[layer][which];
         if (g_demand) { demand_linear(lin->cublas, layer, which, x, y, m); return; }
-        if (g_stream) {
-            if (which == ARM0_QKV && glint_plug_streamer_acquire(g_streamer, layer, &g_cur_dev_plug) != 0)
+        if (g_stream && layer >= g_res_layers) {
+            if (which == ARM0_QKV && glint_plug_streamer_acquire(g_streamer, layer - g_res_layers, &g_cur_dev_plug) != 0)
                 setup_fail("plug acquire failed layer %d", layer);
             if (!g_cur_dev_plug) setup_fail("plug for layer %d not acquired (linear order changed)", layer);
             if (launch_glint_htile_s3_f32_stream(g.hole, g_cur_dev_plug + g_plug_off[layer][which], g.am, x, y, m,
                                                  ARM0_LINEAR[which].n_out, ARM0_LINEAR[which].k_in, 64, 0) != 0)
                 setup_fail("htile launch failed layer %d", layer);
             if (which == ARM0_DOWN) {
-                if (glint_plug_streamer_release(g_streamer, layer) != 0) setup_fail("plug release failed layer %d", layer);
+                if (glint_plug_streamer_release(g_streamer, layer - g_res_layers) != 0) setup_fail("plug release failed layer %d", layer);
                 g_cur_dev_plug = NULL;
             }
             return;
@@ -349,6 +350,8 @@ int main(int argc, char** argv) {
         printf("usage: %s [--dump DIR] [--int8 PIN.safetensors] <model_snapshot_dir> <artifacts_dir>\n", argv[0]);
         return EXIT_USAGE;
     }
+    if (g_stream && getenv("ARM0_STREAM_RESIDENT_LAYERS")) { g_res_layers = atoi(getenv("ARM0_STREAM_RESIDENT_LAYERS")); if (g_res_layers < 0) g_res_layers = 0; if (g_res_layers > N_LAYERS) g_res_layers = N_LAYERS; }
+    { size_t tot = 0; CK(cudaMemGetInfo(&g_vram_base_free, &tot)); }
     const char* model_dir = argv[argi];
     const char* artifacts_dir = argv[argi + 1];
     char path[1024];
@@ -388,20 +391,20 @@ int main(int argc, char** argv) {
         if (safetensors_open(&gs1, a) != 0 || safetensors_open(&gs2, b) != 0) setup_fail("cannot open glint pin %s", glint_dir);
         for (int l = 0; l < N_LAYERS; l++) for (int j = 0; j < ARM0_N_LINEARS; j++) glint_upload(&gs1, &gs2, l, j);
         if (g_demand) demand_init();
-        if (g_stream) {
+        if (g_stream && g_res_layers < N_LAYERS) {
             CK(cudaStreamCreateWithFlags(&g_copy_stream, cudaStreamNonBlocking));
-            if (glint_plug_streamer_create(&g_streamer, N_LAYERS, g_layer_bytes, g_copy_stream, 0) != 0) setup_fail("streamer create failed");
-            for (int l = 0; l < N_LAYERS; l++) {
+            if (glint_plug_streamer_create(&g_streamer, N_LAYERS - g_res_layers, g_layer_bytes + g_res_layers, g_copy_stream, 0) != 0) setup_fail("streamer create failed");
+            for (int l = g_res_layers; l < N_LAYERS; l++) {
                 std::vector<uint8_t> cat(g_layer_bytes[l]);
                 for (int j = 0; j < ARM0_N_LINEARS; j++) {
                     size_t nb = ((size_t)ARM0_LINEAR[j].n_out * ARM0_LINEAR[j].k_in + 1) / 2;
                     memcpy(cat.data() + g_plug_off[l][j], g_plug_src[l][j], nb);
                 }
-                if (glint_plug_streamer_set_host_data(g_streamer, l, cat.data(), g_layer_bytes[l]) != 0) setup_fail("streamer host data layer %d", l);
+                if (glint_plug_streamer_set_host_data(g_streamer, l - g_res_layers, cat.data(), g_layer_bytes[l]) != 0) setup_fail("streamer host data layer %d", l);
             }
             if (glint_plug_streamer_start(g_streamer) != 0) setup_fail("streamer start failed");
         }
-        printf("Glint pin loaded (%s).\n", g_stream ? "hole resident, plug streamed through the 2-slot ring" : (g_hole_only ? "hole only, plug zeroed" : "hole + plug"));
+        printf("Glint pin loaded (%s).\n", g_stream ? "hole resident; first N layers' plug resident, the rest streamed through the 2-slot ring" : (g_hole_only ? "hole only, plug zeroed" : "hole + plug"));
     }
     if (getenv("ARM0_NF4") && getenv("ARM0_NF4_WMAP")) {
         g_nf4_map = fopen(getenv("ARM0_NF4_WMAP"), "w");
@@ -426,6 +429,10 @@ int main(int argc, char** argv) {
     arm0_forward(&model, ev.tokens, cublas_linear, &lin, lin.cublas, dump_dir ? g_dump : NULL, &g_result);
     if (g_demand) demand_report();
     if (g_stream) {
+        size_t fr = 0, tot = 0; CK(cudaMemGetInfo(&fr, &tot));
+        printf("VRAM_USED_MIB %.1f (resident plug layers %d of %d)\n", ((double)g_vram_base_free - (double)fr) / 1048576.0, g_res_layers, N_LAYERS);
+    }
+    if (g_stream && g_streamer) {
         GlintStreamerStats ss;
         if (glint_plug_streamer_get_stats(g_streamer, &ss) == 0) {
             double mx = 0; for (int l = 1; l < ss.n_layers; l++) if (ss.per_layer_stall_ms[l] > mx) mx = ss.per_layer_stall_ms[l];
