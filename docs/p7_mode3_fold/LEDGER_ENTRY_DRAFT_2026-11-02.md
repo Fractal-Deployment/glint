@@ -1,4 +1,4 @@
-# P7 results ledger entry (DRAFT for TD review, glint #22)
+# P7 results ledger entry (DRAFT for TD review, glint #22), updated 2026-11-03
 
 Phi-4-mini-instruct, RTX 3060 sm_86, 2047 evaluation tokens (`artifacts/eval_tokens_2048.txt`, sha in `hf_meta.json`), HF BF16 sdpa oracle PPL 5.486957. KL is KL(BF16 CUDA anchor || arm) per token. Every number below is from a run on this machine in glint `main`; commands are the harness invocations named in each PR.
 
@@ -15,5 +15,10 @@ Phi-4-mini-instruct, RTX 3060 sm_86, 2047 evaluation tokens (`artifacts/eval_tok
 | Resolution + plugs | PR #46 | KL 4.17e-4, top-1 98.49%, PPL 5.476566, 6.03 s |
 | NF4 comparison | PR #49 | PPL 5.833352, top-1 91.06% (fails 95.0%) |
 | Activation maps | PR #47, #48, #50 | BF16 rerun byte-identical; INT8 vs BF16 rms mean 0.16%, NF4 2.13% |
+| Fold forward on the harness (Mode 3, hole+plug) | PR #52 | PPL 5.479566, top-1 98.05%; H-TILE kernel 136 s vs 3.4 s INT8 |
+| All-Mojo forward (no CUDA C / Python) | PRs #55-#69 | INT8 PPL 5.4819, top-1 97.75%; + plugs + resolution PPL 5.4772, top-1 98.39% |
+| Stage 0 question list (rules 0.5) | PR #72 | 144 items, list sha256 bf342e75..., reproducible; cal16k exclusion not applied (list not on disk) |
+| M4-LOSSY sweep (knob = residual plug bit width) | PR #73, amendment committed before data | weight RMSE 1.39e-5 / 3.24e-5 / 9.70e-5 for b=4/3/2; KL mean 1.240e-3 / 1.195e-3 / 1.144e-3 (non-monotone); ideal bytes 1.81e9 / 1.41e9 / 1.01e9 |
+| M4-LOSSLESS (Huffman over glint indices) | PR #73 | 258 streams, 0 round-trip failures, 1.044% smaller |
 
-Not claimed: Mode 3/4 (fold) fidelity, M4 lossy sweep, the equal-bytes comparison against a BF16 model of the same total size, any run on a model other than Phi-4-mini (Mode 2 equivalence also on DeepSeek-R1-Distill-Qwen-1.5B), the 100%-on-confident-positions check of the Gate 1 amendment.
+Not claimed: Part A (H5-H9 hybrid fidelity; job 26 harness sources and captures are not on this machine, and its real-data run is held for Test Designer review), the per-layer metric e for M4, the equal-bytes comparison against a BF16 model of the same total size, any run on a model other than Phi-4-mini (Mode 2 equivalence also on DeepSeek-R1-Distill-Qwen-1.5B), the 100%-on-confident-positions check of the Gate 1 amendment.
