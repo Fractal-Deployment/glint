@@ -1,0 +1,817 @@
+{
+ "tool": "select_questions.mjs",
+ "tool_sha256": "c21a6adb180bd5de65a1a5dff2b282c01d729ef2b45514c9d5740f48a85fadb9",
+ "node": "v24.21.0",
+ "rules": "p7-round3-fold-rules-DRAFT.md §0.5 (sha f1f75980 on the branch copy)",
+ "seed": "20261022",
+ "generator": "SplitMix64 counter-based: key(i)=mix64((seed XOR first8(sha256(category id)))+i); ascending key order",
+ "per_category": 24,
+ "map": 16,
+ "confirm": 8,
+ "tokenizer": {
+  "model": "microsoft/Phi-4-mini-instruct",
+  "revision": "cfbefacb99257ffa30c83adab238a50856ac3083",
+  "tokenizer_json_sha256": "382cc235b56c725945e149cc25f191da667c836655efd0857b004320e90e91ea",
+  "tokenizer_config_json_sha256": "9c9b6bc0c94d95f69f826c41069a3e8b387ac3ced89601d201886e99240ac9db",
+  "chat_template": "excluded",
+  "add_special_tokens": false
+ },
+ "reference_check": {
+  "matched": 23,
+  "total": 23,
+  "fixture_sha256": "e4db075430d574b94b116ee4e0d1883c0825256ed5a582a7b783216ec1d4e752"
+ },
+ "gsm8k_test_exclusion": {
+  "file": "/home/workspace/lakes/metamathqa_20261019/gsm8k_test.jsonl",
+  "problems": "0-80",
+  "rule": ">= 50% shared 8-grams or identical normalized text"
+ },
+ "not_applied": [
+  "cal16k problem exclusion (cal16k list not found on disk)"
+ ],
+ "list_sha256": "bf342e751f5ea635f99ae05ccd433e34fe8a1b525f7c6c170dba63e039106db9",
+ "texts_sha256": "459e50931399be6df3d9b9dadacc78d7ad81fcea10d7729d3f2d572348ced8e4",
+ "categories": {
+  "QC1": {
+   "name": "factual recall",
+   "universe_rows": 87925,
+   "candidates_walked": 25,
+   "rejected": {
+    "missing_field": 0,
+    "out_of_bounds": 1,
+    "duplicate": 0,
+    "gsm8k_test_0_80": 0
+   },
+   "pool_files": [
+    {
+     "file": "qc1-nq_open/nq_open/train-00000-of-00001.parquet",
+     "rows": 87925,
+     "sha256": "25d3a544324f900b31ebc05a3a5686bdd5b9b42738133500675c3f20eee7d83a"
+    }
+   ],
+   "bounds": [
+    {
+     "pool": "qc1-nq_open",
+     "lo": 8,
+     "hi": 64
+    }
+   ]
+  },
+  "QC2": {
+   "name": "arithmetic/multi-step math",
+   "universe_rows": 7473,
+   "candidates_walked": 24,
+   "rejected": {
+    "missing_field": 0,
+    "out_of_bounds": 0,
+    "duplicate": 0,
+    "gsm8k_test_0_80": 0
+   },
+   "pool_files": [
+    {
+     "file": "qc2-gsm8k-train/train-00000-of-00001.parquet",
+     "rows": 7473,
+     "sha256": "ea82612ea9582142387730c793eb67d3b12849002bc0b7fa6f8efafa7351419d"
+    }
+   ],
+   "bounds": [
+    {
+     "pool": "qc2-gsm8k-train",
+     "lo": 32,
+     "hi": 256
+    }
+   ]
+  },
+  "QC3": {
+   "name": "code",
+   "universe_rows": 1138,
+   "candidates_walked": 24,
+   "rejected": {
+    "missing_field": 0,
+    "out_of_bounds": 0,
+    "duplicate": 0,
+    "gsm8k_test_0_80": 0
+   },
+   "pool_files": [
+    {
+     "file": "qc3-mbpp/full/prompt-00000-of-00001.parquet",
+     "rows": 10,
+     "sha256": "a053e4bb85ceb77430ae80592addb4ca4dc6ba087592f9e04537800ee88b7431"
+    },
+    {
+     "file": "qc3-mbpp/full/test-00000-of-00001.parquet",
+     "rows": 500,
+     "sha256": "566fd53060ffba5766dace1d1e2f4c38906781526de222b0dfbdbc325b696c77"
+    },
+    {
+     "file": "qc3-mbpp/full/train-00000-of-00001.parquet",
+     "rows": 374,
+     "sha256": "09d125ca31edacb7800be8c67c45abff618faf0214ff551291817d06bdb914ae"
+    },
+    {
+     "file": "qc3-mbpp/full/validation-00000-of-00001.parquet",
+     "rows": 90,
+     "sha256": "3f0ec060987432d99fe8fb409d31e6c67445b208a01741c5583517c80a10fe80"
+    },
+    {
+     "file": "qc3-openai_humaneval/openai_humaneval/test-00000-of-00001.parquet",
+     "rows": 164,
+     "sha256": "2f2871a15fbc95b6c683043359f4ed8e144c5a1c4f24f25f66bc51f598dfcfb6"
+    }
+   ],
+   "bounds": [
+    {
+     "pool": "qc3-mbpp",
+     "lo": 32,
+     "hi": 512
+    },
+    {
+     "pool": "qc3-openai_humaneval",
+     "lo": 32,
+     "hi": 512
+    }
+   ]
+  },
+  "QC4": {
+   "name": "long-context",
+   "universe_rows": 726000,
+   "candidates_walked": 306,
+   "rejected": {
+    "missing_field": 0,
+    "out_of_bounds": 282,
+    "duplicate": 0,
+    "gsm8k_test_0_80": 0
+   },
+   "pool_files": [
+    {
+     "file": "qc4-fineweb_edu_c1/000_00000.parquet",
+     "rows": 726000,
+     "sha256": "b1ba7b2ce4cb5ea6ef42dca40263eabb85f37700d01693a68e9b30a31d78e871"
+    }
+   ],
+   "bounds": [
+    {
+     "pool": "qc4-fineweb_edu_c1",
+     "lo": 1500,
+     "hi": 3000
+    }
+   ]
+  },
+  "QC5": {
+   "name": "rare-token/multilingual",
+   "universe_rows": 109800,
+   "candidates_walked": 24,
+   "rejected": {
+    "missing_field": 0,
+    "out_of_bounds": 0,
+    "duplicate": 0,
+    "gsm8k_test_0_80": 0
+   },
+   "pool_files": [
+    {
+     "file": "qc5-belebele/data/acm_Arab.jsonl",
+     "rows": 900,
+     "sha256": "112b26249148796740625cde8e6cfef5315540ad61a3dc00256c4c0b624a9563"
+    },
+    {
+     "file": "qc5-belebele/data/afr_Latn.jsonl",
+     "rows": 900,
+     "sha256": "4bfdca78626ead35c4eea5a218c2ce58511d49dbe432889fc398ccd5077e791b"
+    },
+    {
+     "file": "qc5-belebele/data/als_Latn.jsonl",
+     "rows": 900,
+     "sha256": "0cacd08b1d79dce8964a98c6af642accb9c87a3572001dceeafdcef55eb4153a"
+    },
+    {
+     "file": "qc5-belebele/data/amh_Ethi.jsonl",
+     "rows": 900,
+     "sha256": "73b094d1fc83b450c4939e16f463cb3a9547a391a7317c3a4fe8978266590c01"
+    },
+    {
+     "file": "qc5-belebele/data/apc_Arab.jsonl",
+     "rows": 900,
+     "sha256": "1c616c12392bd6eaebef3bcc719d101d87a0cacc963817b201fda72d3d8b3cbc"
+    },
+    {
+     "file": "qc5-belebele/data/arb_Arab.jsonl",
+     "rows": 900,
+     "sha256": "a2282b0974826172b1ce76a5d9e362091cfc8a7a25023df2d011f88f588b56e0"
+    },
+    {
+     "file": "qc5-belebele/data/arb_Latn.jsonl",
+     "rows": 900,
+     "sha256": "479bf089cb05d910651d253388625a2bf797b3873ac5d6ce67d1ba48f1785a71"
+    },
+    {
+     "file": "qc5-belebele/data/ars_Arab.jsonl",
+     "rows": 900,
+     "sha256": "5bde06556dfd913584556348ec0d6961b649f996232bf7c3f4aa7d0e764b6077"
+    },
+    {
+     "file": "qc5-belebele/data/ary_Arab.jsonl",
+     "rows": 900,
+     "sha256": "7e31c090059a00f6099689a89cb6c8306254c77abe2836dea46c0cc9744fd6b7"
+    },
+    {
+     "file": "qc5-belebele/data/arz_Arab.jsonl",
+     "rows": 900,
+     "sha256": "10b25322c22dbb8d34f90ef6387bce0182e09ac41ed248c7c12a0847a6eb5835"
+    },
+    {
+     "file": "qc5-belebele/data/asm_Beng.jsonl",
+     "rows": 900,
+     "sha256": "f83a57a9e5b05062059ba08847c8865afa67d7481ab6fd4f43b59f77464f39c5"
+    },
+    {
+     "file": "qc5-belebele/data/azj_Latn.jsonl",
+     "rows": 900,
+     "sha256": "b5a02d1ab513c7aa59866621a5db9a28640de113879e0e0b0ff0f5b9a11807ac"
+    },
+    {
+     "file": "qc5-belebele/data/bam_Latn.jsonl",
+     "rows": 900,
+     "sha256": "89d7b2f27eb5c25c2e2c051162d7bf3e76d1419c5c179c58b233f42b1f06b964"
+    },
+    {
+     "file": "qc5-belebele/data/ben_Beng.jsonl",
+     "rows": 900,
+     "sha256": "cd8be5c2a52d0d3847ff0c2837f3186bbc32f9d19439acd17304cc8c94665896"
+    },
+    {
+     "file": "qc5-belebele/data/ben_Latn.jsonl",
+     "rows": 900,
+     "sha256": "2a27a5a3aa2e9918d2626dc2e73665daf210b1bbd90e72462a53e7686c6eb12e"
+    },
+    {
+     "file": "qc5-belebele/data/bod_Tibt.jsonl",
+     "rows": 900,
+     "sha256": "a427b57a8c03566c38cc7f05f23b681603e9848631c2469f6e8f86c401cb44cc"
+    },
+    {
+     "file": "qc5-belebele/data/bul_Cyrl.jsonl",
+     "rows": 900,
+     "sha256": "6a58a750825c90cfee36206e4ed9f80a960d47e4678c1fc84d9822eedbff9952"
+    },
+    {
+     "file": "qc5-belebele/data/cat_Latn.jsonl",
+     "rows": 900,
+     "sha256": "3083e463fc942d1a2742a4b0df9cf5a42ca1f82cc14af3bc0ee51979cc0bfb6e"
+    },
+    {
+     "file": "qc5-belebele/data/ceb_Latn.jsonl",
+     "rows": 900,
+     "sha256": "26c658da456a025c14e46411a54d51b87dda50334e2ebf0f1eeb87943310d9b6"
+    },
+    {
+     "file": "qc5-belebele/data/ces_Latn.jsonl",
+     "rows": 900,
+     "sha256": "00c9c16d12c2f7293da7a49de44675f4e7af04ce209c32859b09e32cf16158ea"
+    },
+    {
+     "file": "qc5-belebele/data/ckb_Arab.jsonl",
+     "rows": 900,
+     "sha256": "b7aa4cb5c9ee985c1293615d91a9c25419e735ac83b98068a31830413a8cb053"
+    },
+    {
+     "file": "qc5-belebele/data/dan_Latn.jsonl",
+     "rows": 900,
+     "sha256": "f7a8b85183f1723b1dec202ba9398876069c6b39c9c4513e73235a5f249d52d5"
+    },
+    {
+     "file": "qc5-belebele/data/deu_Latn.jsonl",
+     "rows": 900,
+     "sha256": "ca04cfec5a865a803dfe70636b6f6c4696efbbfa66f4eb5e8cf89c86b0a74f09"
+    },
+    {
+     "file": "qc5-belebele/data/ell_Grek.jsonl",
+     "rows": 900,
+     "sha256": "c36ce23ad2069b3d2085ee2a5ad72bf23c717d209d290e3c65c671b145efb02c"
+    },
+    {
+     "file": "qc5-belebele/data/eng_Latn.jsonl",
+     "rows": 900,
+     "sha256": "15af884c2b5994fdc71199e79d553a1864b08ce1b31894aa87f6be925a064a31"
+    },
+    {
+     "file": "qc5-belebele/data/est_Latn.jsonl",
+     "rows": 900,
+     "sha256": "e6862f5544f7a94fe2da483442cfb8d464b956906a40f24024bcfd882de9096b"
+    },
+    {
+     "file": "qc5-belebele/data/eus_Latn.jsonl",
+     "rows": 900,
+     "sha256": "0036212fcafa0d932305c487f7dfd54fca7e2da656b402df655488e495234f7f"
+    },
+    {
+     "file": "qc5-belebele/data/fin_Latn.jsonl",
+     "rows": 900,
+     "sha256": "63b229c5ac5a07064c0ce162ceb13bb416862169998a0781bf818fc99ce5b40f"
+    },
+    {
+     "file": "qc5-belebele/data/fra_Latn.jsonl",
+     "rows": 900,
+     "sha256": "11c3cd50907631642e6dca8396974e4d0dfbf6603e0f6e35d6c1e64eed662060"
+    },
+    {
+     "file": "qc5-belebele/data/fuv_Latn.jsonl",
+     "rows": 900,
+     "sha256": "ea5838c44905ccfb17f1c18deec7da67a775fb6ddf411714f0af18b1e5690b3b"
+    },
+    {
+     "file": "qc5-belebele/data/gaz_Latn.jsonl",
+     "rows": 900,
+     "sha256": "d95dace3c5b2464a490149b30f1cbbf44585d0229603e063953e08827bdc49c3"
+    },
+    {
+     "file": "qc5-belebele/data/grn_Latn.jsonl",
+     "rows": 900,
+     "sha256": "613409092a19e4b3d3156b838478b0b5aa0d46e83798e770c2a70ed9657a93aa"
+    },
+    {
+     "file": "qc5-belebele/data/guj_Gujr.jsonl",
+     "rows": 900,
+     "sha256": "36799a073817b5c756a284152eb41c7853a5436c3ac8361a1df6a5ca7f4a3bf4"
+    },
+    {
+     "file": "qc5-belebele/data/hat_Latn.jsonl",
+     "rows": 900,
+     "sha256": "d31301424a10a2a61d4400ba169ba4c84e2468015cc704084e9217d8cc69b59d"
+    },
+    {
+     "file": "qc5-belebele/data/hau_Latn.jsonl",
+     "rows": 900,
+     "sha256": "888b72ccad1244198c3d6e47abc31bf7a365420ed2334eaa24f490230b64e9f5"
+    },
+    {
+     "file": "qc5-belebele/data/heb_Hebr.jsonl",
+     "rows": 900,
+     "sha256": "134b45d6201d67633a9d49882238c55630558c717b184679151ac9f92bda79a3"
+    },
+    {
+     "file": "qc5-belebele/data/hin_Deva.jsonl",
+     "rows": 900,
+     "sha256": "41d34aab7f8fc4d57dc5d61fb36c3ce6ce230fe8e1c156c4d3cff0ba4710ed8f"
+    },
+    {
+     "file": "qc5-belebele/data/hin_Latn.jsonl",
+     "rows": 900,
+     "sha256": "f93c3c827f387644c9f176ad8d715367e1a4cc8ccd37c64c20a489e8f7432ce6"
+    },
+    {
+     "file": "qc5-belebele/data/hrv_Latn.jsonl",
+     "rows": 900,
+     "sha256": "376b0600f518b6aa022a203dbfec0655e27568e09eb267840d3f43a4b31d37d3"
+    },
+    {
+     "file": "qc5-belebele/data/hun_Latn.jsonl",
+     "rows": 900,
+     "sha256": "9679eeac49aac68e6bcd9f11c89959fbcde04f023f6cc1faa32f66d5f7d664e4"
+    },
+    {
+     "file": "qc5-belebele/data/hye_Armn.jsonl",
+     "rows": 900,
+     "sha256": "24febd12de5c6a3988ec49223526121162d0842a5815c524d2080641522ea25b"
+    },
+    {
+     "file": "qc5-belebele/data/ibo_Latn.jsonl",
+     "rows": 900,
+     "sha256": "269307012c915a86d59d81f58a732c275f3dbd95b507e2a8e1c47662fda0a9aa"
+    },
+    {
+     "file": "qc5-belebele/data/ilo_Latn.jsonl",
+     "rows": 900,
+     "sha256": "ec47dd93768ab72c29fcd668cacf9474c06081b6166d070a5ab31d2f1ef7171a"
+    },
+    {
+     "file": "qc5-belebele/data/ind_Latn.jsonl",
+     "rows": 900,
+     "sha256": "14b16460324ca9b70f0fba56068a9860b1b5db00b6791acc4069aad69d8ab641"
+    },
+    {
+     "file": "qc5-belebele/data/isl_Latn.jsonl",
+     "rows": 900,
+     "sha256": "bb93bd348b06a17ba2df2756e195d911651d5aade593fe1b63dc1010456d43dd"
+    },
+    {
+     "file": "qc5-belebele/data/ita_Latn.jsonl",
+     "rows": 900,
+     "sha256": "008c504767f4f2eaea6938a5ec75a617634cea8386b64ebfb16ee7b9a12aba27"
+    },
+    {
+     "file": "qc5-belebele/data/jav_Latn.jsonl",
+     "rows": 900,
+     "sha256": "3bfd6d5b7b27f19b3e532000ce0193455ed6a6b013f244f3d00cd01ca0bb142e"
+    },
+    {
+     "file": "qc5-belebele/data/jpn_Jpan.jsonl",
+     "rows": 900,
+     "sha256": "c5cc2184b7468196ea8a1c37382ab9e80640edd410266a381a42a05cbc0d2605"
+    },
+    {
+     "file": "qc5-belebele/data/kac_Latn.jsonl",
+     "rows": 900,
+     "sha256": "b79a46accfadbcccee4bb462e367bcc81a8549c5108f49c6fe2cdcfaf87e42ec"
+    },
+    {
+     "file": "qc5-belebele/data/kan_Knda.jsonl",
+     "rows": 900,
+     "sha256": "de094c4415ae4bf59f848dbcfdb6e7dab49e4a1eb90a8475e390192e4baff5f5"
+    },
+    {
+     "file": "qc5-belebele/data/kat_Geor.jsonl",
+     "rows": 900,
+     "sha256": "70a3adb38b9573d27f9e32e5c78f888bfdd73efdd7854261f089312b3c14990d"
+    },
+    {
+     "file": "qc5-belebele/data/kaz_Cyrl.jsonl",
+     "rows": 900,
+     "sha256": "3baa165870f64091b0eb9181da3671b36ed4b4262ad0533df76a2b881a931ec9"
+    },
+    {
+     "file": "qc5-belebele/data/kea_Latn.jsonl",
+     "rows": 900,
+     "sha256": "7d7e5c17b381dfc8dbfe295c6aa4bfd21d5a0c4b35dbca974eebad87e0c8a1e7"
+    },
+    {
+     "file": "qc5-belebele/data/khk_Cyrl.jsonl",
+     "rows": 900,
+     "sha256": "a59d810840e40ae477332091113946a882dcc9275c41669a1f0bb0676f469d6d"
+    },
+    {
+     "file": "qc5-belebele/data/khm_Khmr.jsonl",
+     "rows": 900,
+     "sha256": "af41fc3a36343ea0f83b5ecf089e952e8f712dad22081783e562e50965b16cd7"
+    },
+    {
+     "file": "qc5-belebele/data/kin_Latn.jsonl",
+     "rows": 900,
+     "sha256": "47a5d9f7916ef5b95c21787c96e79bf04e00d1804525619839c12098277d5dec"
+    },
+    {
+     "file": "qc5-belebele/data/kir_Cyrl.jsonl",
+     "rows": 900,
+     "sha256": "88712edc7f96b97c52dbe4960269de129a33a7efacc9532e94580c8916d6aa49"
+    },
+    {
+     "file": "qc5-belebele/data/kor_Hang.jsonl",
+     "rows": 900,
+     "sha256": "e995f945e9dd7a87ed9c2c727b3fac01cf0e82fa94989cf448266d4f1c136fe2"
+    },
+    {
+     "file": "qc5-belebele/data/lao_Laoo.jsonl",
+     "rows": 900,
+     "sha256": "5991073210033636e91864fca273cd4fdb7172899de216dbcf3a2a8d3f48019d"
+    },
+    {
+     "file": "qc5-belebele/data/lin_Latn.jsonl",
+     "rows": 900,
+     "sha256": "f43b76fa75f953f943c549914a27045190a29dc99592679611a1af5a49a57905"
+    },
+    {
+     "file": "qc5-belebele/data/lit_Latn.jsonl",
+     "rows": 900,
+     "sha256": "650efcdbd8936d4bb22d069cfed041c541c1451821a1d92553d6332ca7e4b5fd"
+    },
+    {
+     "file": "qc5-belebele/data/lug_Latn.jsonl",
+     "rows": 900,
+     "sha256": "da970ca247b0a3c508a12a3c4b11fe55072b7e3b94f7c33d1423ca446d07ce79"
+    },
+    {
+     "file": "qc5-belebele/data/luo_Latn.jsonl",
+     "rows": 900,
+     "sha256": "e6165760c16a64d52205465efadf84fde1f9bfc1929b620d151a12a74278dbc4"
+    },
+    {
+     "file": "qc5-belebele/data/lvs_Latn.jsonl",
+     "rows": 900,
+     "sha256": "ef993e001876b438348a4d80af9e75f99dbe88067528a166658dc034c07e900f"
+    },
+    {
+     "file": "qc5-belebele/data/mal_Mlym.jsonl",
+     "rows": 900,
+     "sha256": "13dfe860efadb2ff9a080e2b191a6b3bbd478786ac2c67fe7f32d56192e4dbf0"
+    },
+    {
+     "file": "qc5-belebele/data/mar_Deva.jsonl",
+     "rows": 900,
+     "sha256": "b6f55f4be685d01dc9b57eb14cc7cab272073a2cc5713de4a2f28da48ca9633d"
+    },
+    {
+     "file": "qc5-belebele/data/mkd_Cyrl.jsonl",
+     "rows": 900,
+     "sha256": "c90e8e362ea453ef8c193e03a1f9dd4bfa54d7c6fbe6f002230cbf5308bdf2d8"
+    },
+    {
+     "file": "qc5-belebele/data/mlt_Latn.jsonl",
+     "rows": 900,
+     "sha256": "d51c4b0c4c171d180137a2545c18aa34e9c6e883678a48145d8d3a44301bc95b"
+    },
+    {
+     "file": "qc5-belebele/data/mri_Latn.jsonl",
+     "rows": 900,
+     "sha256": "8f623a241864b514588fa894527b96fb549f6c681467a1a6933056d672f913c5"
+    },
+    {
+     "file": "qc5-belebele/data/mya_Mymr.jsonl",
+     "rows": 900,
+     "sha256": "41fa2cbdcb18598d95a75d2300723f14870b94476d9df5c1aec51028b05ef955"
+    },
+    {
+     "file": "qc5-belebele/data/nld_Latn.jsonl",
+     "rows": 900,
+     "sha256": "433401ef696d756034f55944acde55f570abc6c3e6be180e5b93310a9cbe79eb"
+    },
+    {
+     "file": "qc5-belebele/data/nob_Latn.jsonl",
+     "rows": 900,
+     "sha256": "fa477a519acb33cedc06b07515bb0b8f80f5330eabd92cefa4a835f04930eaee"
+    },
+    {
+     "file": "qc5-belebele/data/npi_Deva.jsonl",
+     "rows": 900,
+     "sha256": "8508ea924f987a2b290fd77c29e42be53b4e7a79446ccc9dbcae3996db61d6a1"
+    },
+    {
+     "file": "qc5-belebele/data/npi_Latn.jsonl",
+     "rows": 900,
+     "sha256": "3125f78725d11bd136d9e0c5b92e7ef2cb87c62fd71b210a8894b8968122fd16"
+    },
+    {
+     "file": "qc5-belebele/data/nso_Latn.jsonl",
+     "rows": 900,
+     "sha256": "01f04935f7c57eceab4b25b881434061a8810cba7378e530701bd4d8c486e028"
+    },
+    {
+     "file": "qc5-belebele/data/nya_Latn.jsonl",
+     "rows": 900,
+     "sha256": "9393fb338c2f3e2e0fbe657f4f067b3787488f2858efbe81f474158f00ac999f"
+    },
+    {
+     "file": "qc5-belebele/data/ory_Orya.jsonl",
+     "rows": 900,
+     "sha256": "4b5071eea3fae929da1a1b78b2371e5082a400731fa6f8cf3837f38c6e1b8ee1"
+    },
+    {
+     "file": "qc5-belebele/data/pan_Guru.jsonl",
+     "rows": 900,
+     "sha256": "a30f93c30a014c2e8f98a9689f88ad730fc84f961198324ba7848068ebb7fd7e"
+    },
+    {
+     "file": "qc5-belebele/data/pbt_Arab.jsonl",
+     "rows": 900,
+     "sha256": "e54433920a9375d56cda19d16d63dbf430f5b11dfe26f4dac823821b42d888b7"
+    },
+    {
+     "file": "qc5-belebele/data/pes_Arab.jsonl",
+     "rows": 900,
+     "sha256": "16edaf1b5124412382a804fc431afdfaedc3d1877b79db34001f9df9896ac846"
+    },
+    {
+     "file": "qc5-belebele/data/plt_Latn.jsonl",
+     "rows": 900,
+     "sha256": "52c6b60f1fa3b59d353b1cc20c0c9e283386fa5f0cbbe9e6f1e45ac27a60b578"
+    },
+    {
+     "file": "qc5-belebele/data/pol_Latn.jsonl",
+     "rows": 900,
+     "sha256": "1699bb60b65e258d71989c541027c5439eb36a4f5032a5be392137bf5a1b6bec"
+    },
+    {
+     "file": "qc5-belebele/data/por_Latn.jsonl",
+     "rows": 900,
+     "sha256": "da63cd6215d550f0ad3df5562567096e8e7731a04322f90e801c554b1c43b431"
+    },
+    {
+     "file": "qc5-belebele/data/ron_Latn.jsonl",
+     "rows": 900,
+     "sha256": "9b3ad5203ed2c88f01aeb0e2cbb123a4c13719f3e28b1cbdf8e542ddb9d1a1bf"
+    },
+    {
+     "file": "qc5-belebele/data/rus_Cyrl.jsonl",
+     "rows": 900,
+     "sha256": "e8b81853605b97e993af07a34ad2c0a48ccd8dab80956b0650a161e8fea00de5"
+    },
+    {
+     "file": "qc5-belebele/data/shn_Mymr.jsonl",
+     "rows": 900,
+     "sha256": "85baaa4896fbd0577b933bbacb12df501f96a2fadf8bce83eb215247416aef15"
+    },
+    {
+     "file": "qc5-belebele/data/sin_Latn.jsonl",
+     "rows": 900,
+     "sha256": "0fe1159267975141210b5ded05076659aab085eb20cd8359109f4ced4a28800f"
+    },
+    {
+     "file": "qc5-belebele/data/sin_Sinh.jsonl",
+     "rows": 900,
+     "sha256": "ddad04b2b86750fcffece6041b2cd107e9d1ff22f482e5cb80bf80543a15ebcb"
+    },
+    {
+     "file": "qc5-belebele/data/slk_Latn.jsonl",
+     "rows": 900,
+     "sha256": "371a2bebe3eb0c6b7fc0736dc0733c47740df2c3be520845f6d664da7e19c971"
+    },
+    {
+     "file": "qc5-belebele/data/slv_Latn.jsonl",
+     "rows": 900,
+     "sha256": "8d2d73ac4889c7cc3d2728a31e1ef3a4853f218caa57f45e2050294cd1293ef7"
+    },
+    {
+     "file": "qc5-belebele/data/sna_Latn.jsonl",
+     "rows": 900,
+     "sha256": "cf043faf2d84196ad05063372c9d96a0e0eb6a00365c59a89990590abaedbc78"
+    },
+    {
+     "file": "qc5-belebele/data/snd_Arab.jsonl",
+     "rows": 900,
+     "sha256": "32b4b6173f6970ebeada4216ebe084f2f5fa9755a6a54f718c3f5e6c1c98ede5"
+    },
+    {
+     "file": "qc5-belebele/data/som_Latn.jsonl",
+     "rows": 900,
+     "sha256": "e6071e7380ab18361a977dff1d490032db9d944fa72952a1246f98b8113d8527"
+    },
+    {
+     "file": "qc5-belebele/data/sot_Latn.jsonl",
+     "rows": 900,
+     "sha256": "fa1dfd928c93e2bdd017c29346b5a42cee4770d91c67f5801d4ba49dfe063096"
+    },
+    {
+     "file": "qc5-belebele/data/spa_Latn.jsonl",
+     "rows": 900,
+     "sha256": "04741f3bc179d9d21a71d5fc0fa3eb1873986d0bef1ad47fbbbb3f710428a5b9"
+    },
+    {
+     "file": "qc5-belebele/data/srp_Cyrl.jsonl",
+     "rows": 900,
+     "sha256": "6c12d27225f67fc991c184f1055d7f62c3f079de376017a79e702087639812d0"
+    },
+    {
+     "file": "qc5-belebele/data/ssw_Latn.jsonl",
+     "rows": 900,
+     "sha256": "97a1e941ce8ca680769d9cb74eb7f54edf374e8be3790101d9958637dfe7ff52"
+    },
+    {
+     "file": "qc5-belebele/data/sun_Latn.jsonl",
+     "rows": 900,
+     "sha256": "f5d48c89916a81cbe21f36f408fd63b239a9917530a4098c0f69ed396667f670"
+    },
+    {
+     "file": "qc5-belebele/data/swe_Latn.jsonl",
+     "rows": 900,
+     "sha256": "c3e5e3f0e7d8ea6506c533c5812f39e5f0cd1a908ff9297a247e7977ac89eb6c"
+    },
+    {
+     "file": "qc5-belebele/data/swh_Latn.jsonl",
+     "rows": 900,
+     "sha256": "c7b1c735c1b555f7d12219b7c16ceff3bc9f76d61f1736097acbefe055349813"
+    },
+    {
+     "file": "qc5-belebele/data/tam_Taml.jsonl",
+     "rows": 900,
+     "sha256": "f950eb23a6e7001087d0dbc3ebc892f1b92a99cfc35b929b4cdfb07288037044"
+    },
+    {
+     "file": "qc5-belebele/data/tel_Telu.jsonl",
+     "rows": 900,
+     "sha256": "10403c5d76edf5112b0703217836e15857119a58f431052eb47b7874d9fc419e"
+    },
+    {
+     "file": "qc5-belebele/data/tgk_Cyrl.jsonl",
+     "rows": 900,
+     "sha256": "a6591baa6bb68a7b3acb36bbd84fb71f8398662a042d3c87c8e1bf3d86db3c4f"
+    },
+    {
+     "file": "qc5-belebele/data/tgl_Latn.jsonl",
+     "rows": 900,
+     "sha256": "7c526fce72e8b2748bebaa29cf9597de3a4bbce5990a19700644a34c359b0ad5"
+    },
+    {
+     "file": "qc5-belebele/data/tha_Thai.jsonl",
+     "rows": 900,
+     "sha256": "d668fa174428e09ed03b47028cb30f6fd0032017fc4b1b589c242f15bc8a73e3"
+    },
+    {
+     "file": "qc5-belebele/data/tir_Ethi.jsonl",
+     "rows": 900,
+     "sha256": "1b0ab4c7dc0bd04ef33533921fb5f3fc6ed1630eceef9f5740a1994616b9ea24"
+    },
+    {
+     "file": "qc5-belebele/data/tsn_Latn.jsonl",
+     "rows": 900,
+     "sha256": "4c5856667216aa53b0149f5a4f1493cc474493bbbeff70e4c959d8f67500b095"
+    },
+    {
+     "file": "qc5-belebele/data/tso_Latn.jsonl",
+     "rows": 900,
+     "sha256": "0e584b91833d2ec8851f1b1909d209d45310016b9dc2ec1e1243009cc76dbc24"
+    },
+    {
+     "file": "qc5-belebele/data/tur_Latn.jsonl",
+     "rows": 900,
+     "sha256": "0a592307498d7999eb7be60b7ac3a037545b6ce400f85c61bdb1b88b790e4567"
+    },
+    {
+     "file": "qc5-belebele/data/ukr_Cyrl.jsonl",
+     "rows": 900,
+     "sha256": "a064f157a9322a8bf76f3027da353fe85dbe79e5e5b86aa39b131246d9add932"
+    },
+    {
+     "file": "qc5-belebele/data/urd_Arab.jsonl",
+     "rows": 900,
+     "sha256": "68aa20692ec92883e0b1cfa8e4a720da1c02a773305fe6334472505152276c22"
+    },
+    {
+     "file": "qc5-belebele/data/urd_Latn.jsonl",
+     "rows": 900,
+     "sha256": "19028cfb8e439fb66c23b6685aedf404e2a026a5586327bb096ec3ce7627fedd"
+    },
+    {
+     "file": "qc5-belebele/data/uzn_Latn.jsonl",
+     "rows": 900,
+     "sha256": "4dfc231dbda70767f5e2e7b033cd0fe7ed23e9b9694d560cc1ce248206519202"
+    },
+    {
+     "file": "qc5-belebele/data/vie_Latn.jsonl",
+     "rows": 900,
+     "sha256": "7c93436c0551a0a66f38e2c7ab7386accb23cced283f77300e50164105dbf88c"
+    },
+    {
+     "file": "qc5-belebele/data/war_Latn.jsonl",
+     "rows": 900,
+     "sha256": "1ca9ba160bc015d48bd357e92272d997a0dccd71cf65617a6e29a93442220179"
+    },
+    {
+     "file": "qc5-belebele/data/wol_Latn.jsonl",
+     "rows": 900,
+     "sha256": "1c563df5c40d6c71071cf36d8f9a0a94d2a5940126a28c938a5c2cab3e4cd7f2"
+    },
+    {
+     "file": "qc5-belebele/data/xho_Latn.jsonl",
+     "rows": 900,
+     "sha256": "1dc68c36b6e64ff7b334257fc295baf578be3e3837ecc7bef131f51e81055b11"
+    },
+    {
+     "file": "qc5-belebele/data/yor_Latn.jsonl",
+     "rows": 900,
+     "sha256": "cd422ffeef9ef1286953325c9c1a907426d1c51616eaea3d7e7bc282214efc03"
+    },
+    {
+     "file": "qc5-belebele/data/zho_Hans.jsonl",
+     "rows": 900,
+     "sha256": "f3b7915eaa27e44225979ffd38708c5beee63d28bea27a91253e5fe68e2fa147"
+    },
+    {
+     "file": "qc5-belebele/data/zho_Hant.jsonl",
+     "rows": 900,
+     "sha256": "7135a657cdac9c45c1ce8cb59a778dcd55dbb55c6d074dfef0b32aa3f450e395"
+    },
+    {
+     "file": "qc5-belebele/data/zsm_Latn.jsonl",
+     "rows": 900,
+     "sha256": "6ea84d8fe7c16ca1e88ff9df46a9494a6c270aa5efa91c774af565295300c6d8"
+    },
+    {
+     "file": "qc5-belebele/data/zul_Latn.jsonl",
+     "rows": 900,
+     "sha256": "d2fa78331403cbfec591bc121513bb19356bc4b8ee7b1b4d8048ef5e5a8028c5"
+    }
+   ],
+   "bounds": [
+    {
+     "pool": "qc5-belebele",
+     "lo": 64,
+     "hi": 512
+    }
+   ]
+  },
+  "QC6": {
+   "name": "instruction following",
+   "universe_rows": 541,
+   "candidates_walked": 24,
+   "rejected": {
+    "missing_field": 0,
+    "out_of_bounds": 0,
+    "duplicate": 0,
+    "gsm8k_test_0_80": 0
+   },
+   "pool_files": [
+    {
+     "file": "qc6-IFEval/ifeval_input_data.jsonl",
+     "rows": 541,
+     "sha256": "6a85310ca8ce15eff755aa08a3a4ff931c7e273e7515ebb3c492ea85fd8288f2"
+    }
+   ],
+   "bounds": [
+    {
+     "pool": "qc6-IFEval",
+     "lo": 16,
+     "hi": 256
+    }
+   ]
+  }
+ },
+ "finished_at": "2026-11-04T00:59:36.150Z"
+}
