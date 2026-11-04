@@ -12,7 +12,9 @@ A GLINT weight is `GLINT_CELLS[hole][plug] * absmax`. Write it as `PARENT[hole]*
 
 `H_parent` is the existing H-TILE kernel with the parent table (`GLINT_PARENT_ONLY`, PR #80). `H_delta` is the same kernel with a delta table (cell minus parent). `mask(x)` zeros the input channels whose plug correction is not fetched. For the full mask the result equals the full decode up to f32 summation order; for the empty mask it equals the fold-only arm. Selection is per token (row of `x`) and per linear.
 
-Unit of selection (two granularities, both reported):
+Arithmetic (amended before any data, same day): the H-TILE kernel needs about 135 s per forward and the sweep has about 50 arms (about 4 hours), so the sweep harness decodes parent and correction to bf16 per linear on the fly (transient, one linear at a time) and multiplies with cuBLAS, as the NF4 and INT8 arms do. `H_parent` and `H_delta` above then mean "parent weights" and "correction weights" in bf16, each rounded separately. Consequences, fixed now: the `f = 1` and `f = 0` arms are re-measured in this harness and are the references for the sweep; S1 and S2 below compare against those re-measured arms exactly (an all-ones mask and an all-zeros mask are exact), and against the H-TILE numbers within 0.5% PPL, which is a cross-implementation tolerance sized from the 0.23% gap already seen between the NF4 cuBLAS arm and the fold-only H-TILE arm.
+
+Unit of selection (block granularity is the primary result; channel granularity is run for `act` and `random` only and only after the block sweep is reported):
 - **block**: 64 consecutive input channels (a K-block), the realistic fetch unit (all rows' nibbles for those channels).
 - **channel**: single input channels, comparable to DecDEC (arXiv 2412.20185).
 
@@ -26,8 +28,8 @@ Scores (a selection rule picks the top fraction `f` of units per token per linea
 `f` in {1, 0.5, 0.25, 0.1, 0.05, 0.01, 0}, for rules act, random, static, oracle, at both granularities, all 32 layers, all four linears. Model Phi-4-mini, the 2047-token text, oracle PPL 5.486957, glint pin `Phi-4-mini-glint-from-bf16`, teacher-forced.
 
 Sanity gates (an arm that fails one is INVALID, not a result):
-- S1: `f = 1` reproduces PPL 5.479566 and top-1 2007/2047 to within f32 summation order (PPL within 0.01%).
-- S2: `f = 0` reproduces the fold-only arm (PPL 5.846849, top-1 1869/2047) within the same tolerance.
+- S1: `f = 1` equals the harness's own all-ones-mask arm exactly, and is within 0.5% PPL of the H-TILE hole+plug run (PPL 5.479566, top-1 2007/2047).
+- S2: `f = 0` equals the harness's own all-zeros-mask arm exactly, and is within 0.5% PPL of the H-TILE fold-only run (PPL 5.846849, top-1 1869/2047).
 
 ## Readouts (every arm MEASURED or INVALID, never PASS/FAIL by itself)
 1. PPL and its delta to the oracle; top-1 vs the HF oracle.
