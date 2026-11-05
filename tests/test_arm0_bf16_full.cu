@@ -400,6 +400,81 @@ static void dec_step(const Arm0Model *model, DecBufs &b, int token, int pos, int
     CK(cudaMemcpy(top1, b.top1, 4, cudaMemcpyDeviceToHost)); CK(cudaMemcpy(loss, b.loss, 4, cudaMemcpyDeviceToHost));
 }
 
+/* ---- GLINT decode GEMV (glint #89): y[n] = sum_k GLINT_CELLS[hole][plug] * absmax * x[k] for one token (M = 1). One warp per output row;
+ * each lane reads 16 B of hole and 16 B of plug (32 weights) per step, so a warp's loads are contiguous. The 16x16 table is in shared memory
+ * (constant memory would serialize on the divergent nibble index). f32 accumulation. parent_only decodes PARENT[hole] (the fold-only arm). ---- */
+static int g_gemv = 0, g_gemv_parent = 0;
+__global__ void k_glint_gemv(const uint8_t *hole, const uint8_t *plug, const float *am, const __nv_bfloat16 *x, float *y, int N, int K, int parent_only) {
+    extern __shared__ float sm[];
+    float *s_cells = sm, *s_x = sm + 256;
+    for (int i = threadIdx.x; i < 256; i += blockDim.x) s_cells[i] = parent_only ? c_parent[i >> 4] : c_cells[i >> 4][i & 15];
+    for (int k = threadIdx.x; k < K; k += blockDim.x) s_x[k] = __bfloat162float(x[k]);
+    __syncthreads();
+    int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, row = blockIdx.x * (blockDim.x >> 5) + warp;
+    if (row >= N) return;
+    const uint4 *hp = (const uint4 *)(hole + ((size_t)row * K) / 2), *pp = (const uint4 *)(plug + ((size_t)row * K) / 2);
+    float acc = 0.f;
+    for (int c = lane; c < K / 32; c += 32) {
+        uint4 hv = hp[c], pv = pp[c];
+        float a = am[((size_t)row * K + (size_t)c * 32) / 64];
+        const uint32_t hw[4] = {hv.x, hv.y, hv.z, hv.w}, pw[4] = {pv.x, pv.y, pv.z, pv.w};
+        const float *xs = s_x + c * 32;
+#pragma unroll
+        for (int w = 0; w < 4; w++)
+#pragma unroll
+            for (int b = 0; b < 8; b++) {
+                int h = (hw[w] >> (4 * b)) & 15, p = (pw[w] >> (4 * b)) & 15;
+                acc += (s_cells[(h << 4) | p] * a) * xs[w * 8 + b];
+            }
+    }
+    for (int o = 16; o > 0; o >>= 1) acc += __shfl_down_sync(0xffffffff, acc, o);
+    if (lane == 0) y[row] = acc;
+}
+static void gemv_init() {
+    CK(cudaMemcpyToSymbol(c_cells, GLINT_CELLS, sizeof(float) * 256));
+    CK(cudaMemcpyToSymbol(c_parent, NF4_CODE, sizeof(float) * 16));
+    const char *po = getenv("GLINT_PARENT_ONLY"); g_gemv_parent = po && po[0] == '1';
+}
+static void gemv_launch(const uint8_t *hole, const uint8_t *plug, const float *am, const __nv_bfloat16 *x, float *y, int N, int K) {
+    int blocks = (N + 3) / 4; size_t smem = (256 + (size_t)K) * 4;
+    k_glint_gemv<<<blocks, 128, smem>>>(hole, plug, am, x, y, N, K, g_gemv_parent);
+    CK(cudaGetLastError());
+}
+
+/* ARM0_GEMV_CHECK=1: for every M = 1 linear also run H-TILE and a double-precision reference on the same input, and record the largest and
+ * mean error of the GEMV and of H-TILE against the double reference, and of the GEMV against H-TILE, each relative to the RMS of the reference. */
+static int g_gemv_check = 0; static long g_gc_n = 0;
+static double g_gc_max_gh = 0, g_gc_sum_gh = 0, g_gc_max_gr = 0, g_gc_sum_gr = 0, g_gc_max_hr = 0, g_gc_sum_hr = 0;
+static float *g_gc_y2 = NULL; static double *g_gc_yr = NULL;
+__global__ void k_gemv_ref(const uint8_t *hole, const uint8_t *plug, const float *am, const __nv_bfloat16 *x, double *y, int N, int K, int parent_only) {
+    int row = blockIdx.x * blockDim.x + threadIdx.x; if (row >= N) return;
+    double acc = 0;
+    for (int k = 0; k < K; k++) {
+        size_t j = (size_t)row * K + k; uint8_t hb = hole[j >> 1], pb = plug[j >> 1];
+        int h = (j & 1) ? (hb >> 4) : (hb & 15), p = (j & 1) ? (pb >> 4) : (pb & 15);
+        float w = (parent_only ? c_parent[h] : c_cells[h][p]) * am[j >> 6];
+        acc += (double)w * (double)__bfloat162float(x[k]);
+    }
+    y[row] = acc;
+}
+static void gemv_check(const uint8_t *hole, const uint8_t *plug, const float *am, const __nv_bfloat16 *x, const float *y, int N, int K, int layer, int which) {
+    if (!g_gc_y2) { CK(cudaMalloc(&g_gc_y2, 16384 * 4)); CK(cudaMalloc(&g_gc_yr, 16384 * 8)); }
+    if (launch_glint_htile_s3_f32(hole, plug, am, x, g_gc_y2, 1, N, K, 64) != 0) setup_fail("htile check launch failed");
+    k_gemv_ref<<<(N + 127) / 128, 128>>>(hole, plug, am, x, g_gc_yr, N, K, g_gemv_parent);
+    std::vector<float> a(N), b(N); std::vector<double> r(N);
+    CK(cudaMemcpy(a.data(), y, N * 4, cudaMemcpyDeviceToHost)); CK(cudaMemcpy(b.data(), g_gc_y2, N * 4, cudaMemcpyDeviceToHost));
+    CK(cudaMemcpy(r.data(), g_gc_yr, N * 8, cudaMemcpyDeviceToHost));
+    double ss = 0, mgh = 0, mgr = 0, mhr = 0;
+    for (int i = 0; i < N; i++) {
+        ss += r[i] * r[i];
+        mgh = fmax(mgh, fabs((double)a[i] - b[i])); mgr = fmax(mgr, fabs((double)a[i] - r[i])); mhr = fmax(mhr, fabs((double)b[i] - r[i]));
+    }
+    double rms = sqrt(ss / N); if (rms <= 0) return;
+    g_gc_max_gh = fmax(g_gc_max_gh, mgh / rms); g_gc_sum_gh += mgh / rms;
+    g_gc_max_gr = fmax(g_gc_max_gr, mgr / rms); g_gc_sum_gr += mgr / rms;
+    g_gc_max_hr = fmax(g_gc_max_hr, mhr / rms); g_gc_sum_hr += mhr / rms; g_gc_n++;
+}
+
 struct CublasLinears {
     cublasHandle_t cublas;
     __nv_bfloat16 *w[N_LAYERS][ARM0_N_LINEARS];
@@ -415,13 +490,19 @@ static void cublas_linear(void *ctx, int layer, Arm0Linear which, const __nv_bfl
             if (which == ARM0_QKV && glint_plug_streamer_acquire(g_streamer, layer - g_res_layers, &g_cur_dev_plug) != 0)
                 setup_fail("plug acquire failed layer %d", layer);
             if (!g_cur_dev_plug) setup_fail("plug for layer %d not acquired (linear order changed)", layer);
-            if (launch_glint_htile_s3_f32_stream(g.hole, g_cur_dev_plug + g_plug_off[layer][which], g.am, x, y, m,
+            if (g_gemv && m == 1) gemv_launch(g.hole, g_cur_dev_plug + g_plug_off[layer][which], g.am, x, y, ARM0_LINEAR[which].n_out, ARM0_LINEAR[which].k_in);
+            else if (launch_glint_htile_s3_f32_stream(g.hole, g_cur_dev_plug + g_plug_off[layer][which], g.am, x, y, m,
                                                  ARM0_LINEAR[which].n_out, ARM0_LINEAR[which].k_in, 64, 0) != 0)
                 setup_fail("htile launch failed layer %d", layer);
             if (which == ARM0_DOWN) {
                 if (glint_plug_streamer_release(g_streamer, layer - g_res_layers) != 0) setup_fail("plug release failed layer %d", layer);
                 g_cur_dev_plug = NULL;
             }
+            return;
+        }
+        if (g_gemv && m == 1) {
+            gemv_launch(g.hole, g.plug, g.am, x, y, ARM0_LINEAR[which].n_out, ARM0_LINEAR[which].k_in);
+            if (g_gemv_check) gemv_check(g.hole, g.plug, g.am, x, y, ARM0_LINEAR[which].n_out, ARM0_LINEAR[which].k_in, layer, which);
             return;
         }
         if (launch_glint_htile_s3_f32(g.hole, g.plug, g.am, x, y, m, ARM0_LINEAR[which].n_out, ARM0_LINEAR[which].k_in, 64) != 0)
@@ -496,6 +577,7 @@ int main(int argc, char** argv) {
         if (safetensors_open(&gs1, a) != 0 || safetensors_open(&gs2, b) != 0) setup_fail("cannot open glint pin %s", glint_dir);
         for (int l = 0; l < N_LAYERS; l++) for (int j = 0; j < ARM0_N_LINEARS; j++) glint_upload(&gs1, &gs2, l, j);
         if (g_demand) demand_init();
+        if (getenv("ARM0_GEMV") && atoi(getenv("ARM0_GEMV")) == 1) { g_gemv = 1; gemv_init(); g_gemv_check = getenv("ARM0_GEMV_CHECK") && atoi(getenv("ARM0_GEMV_CHECK")) == 1; printf("GLINT decode GEMV enabled for M = 1 (parent_only=%d)\n", g_gemv_parent); }
         if (g_stream && g_res_layers < N_LAYERS) {
             CK(cudaStreamCreateWithFlags(&g_copy_stream, cudaStreamNonBlocking));
             if (glint_plug_streamer_create(&g_streamer, N_LAYERS - g_res_layers, g_layer_bytes + g_res_layers, g_copy_stream, 0) != 0) setup_fail("streamer create failed");
@@ -632,6 +714,7 @@ int main(int argc, char** argv) {
             gen.push_back(t1); tot_ms += ms; nt++;
         }
         printf("DECODE_TIMING steps=%d mean_ms_per_token=%.3f mean_ms_per_layer=%.4f tokens_per_s=%.2f\n", nt, tot_ms / nt, tot_ms / nt / N_LAYERS, 1000.0 * nt / tot_ms);
+        if (g_gemv_check) printf("GEMV_CHECK linears=%ld | max/mean error relative to RMS of the double reference: gemv %.3e/%.3e  htile %.3e/%.3e  gemv-vs-htile %.3e/%.3e\n", g_gc_n, g_gc_max_gr, g_gc_n ? g_gc_sum_gr / g_gc_n : 0.0, g_gc_max_hr, g_gc_n ? g_gc_sum_hr / g_gc_n : 0.0, g_gc_max_gh, g_gc_n ? g_gc_sum_gh / g_gc_n : 0.0);
         printf("DECODE_GEN:"); for (int g : gen) printf(" %d", g); printf("\n");
         const char *dro = getenv("ARM0_DECODE_OUT"); if (dro) { FILE *fo = fopen(dro, "w"); for (size_t i = 0; i < gen.size(); i++) fprintf(fo, "%s%d", i ? " " : "", gen[i]); fprintf(fo, "\n"); fclose(fo); }
         fflush(stdout);
