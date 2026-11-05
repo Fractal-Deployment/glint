@@ -1,0 +1,74 @@
+[PASS] absmax 7 gives scale 1 and halves round to even
+[PASS] a negative absmax maps to -7
+[PASS] an all-zero block (with -0.0) gets scale 1 and code 0
+random blocks: max |w - code * scale| / scale 0.500000170, clamped 0
+[PASS] codes stay in [-7, 7] without clamping
+[PASS] every weight is within half a step of its code
+[PASS] even index in the low nibble, two's complement, odd tail padded with 0
+VERDICT: PASS (0 failed)
+128 linears, 3221225472 weights, 1811939328 bytes of codes and scales (4.5000 bits/weight), 66 tensors copied
+read back: max |w - code * scale| / scale 0.500000, rmse 3.596240e-03, clamped 0, out-of-bound 0, copy mismatches 0
+VERDICT: PASS
+unaligned x+1 q+0                            M=17    N=65     K=224   max err/absdot 1.038e-07  ok
+unaligned x+1 q+0                            M=130   N=129    K=1056  max err/absdot 2.661e-07  ok
+unaligned x+0 q+1                            M=17    N=65     K=224   max err/absdot 1.221e-07  ok
+unaligned x+0 q+1                            M=130   N=129    K=1056  max err/absdot 3.598e-07  ok
+unaligned x+1 q+1                            M=17    N=65     K=224   max err/absdot 1.154e-07  ok
+unaligned x+1 q+1                            M=130   N=129    K=1056  max err/absdot 2.402e-07  ok
+pending error returned without launching     returned cudaErrorMemoryAllocation then cudaSuccess  ok
+model.layers.0.self_attn.qkv_proj            M=1     N=5120   K=3072  max err/absdot 3.471e-07  ok
+model.layers.0.self_attn.qkv_proj            M=17    N=5120   K=3072  max err/absdot 5.210e-07  ok
+model.layers.0.self_attn.qkv_proj            M=64    N=5120   K=3072  max err/absdot 5.021e-07  ok
+model.layers.0.self_attn.qkv_proj            M=2048  N=5120   K=3072  max |tile-cublas|/absdot 0.000e+00  bit-equal 100.00 %  dequant exact  ok
+model.layers.0.self_attn.o_proj              M=1     N=3072   K=3072  max err/absdot 3.226e-07  ok
+model.layers.0.self_attn.o_proj              M=17    N=3072   K=3072  max err/absdot 4.699e-07  ok
+model.layers.0.self_attn.o_proj              M=64    N=3072   K=3072  max err/absdot 4.979e-07  ok
+model.layers.0.self_attn.o_proj              M=2048  N=3072   K=3072  max |tile-cublas|/absdot 0.000e+00  bit-equal 100.00 %  dequant exact  ok
+model.layers.0.mlp.gate_up_proj              M=1     N=16384  K=3072  max err/absdot 4.770e-07  ok
+model.layers.0.mlp.gate_up_proj              M=17    N=16384  K=3072  max err/absdot 5.210e-07  ok
+model.layers.0.mlp.gate_up_proj              M=64    N=16384  K=3072  max err/absdot 5.369e-07  ok
+model.layers.0.mlp.gate_up_proj              M=2048  N=16384  K=3072  max |tile-cublas|/absdot 0.000e+00  bit-equal 100.00 %  dequant exact  ok
+model.layers.0.mlp.down_proj                 M=1     N=3072   K=8192  max err/absdot 5.755e-07  ok
+model.layers.0.mlp.down_proj                 M=17    N=3072   K=8192  max err/absdot 7.906e-07  ok
+model.layers.0.mlp.down_proj                 M=64    N=3072   K=8192  max err/absdot 8.869e-07  ok
+model.layers.0.mlp.down_proj                 M=2048  N=3072   K=8192  max |tile-cublas|/absdot 0.000e+00  bit-equal 100.00 %  dequant exact  ok
+model.layers.31.mlp.down_proj                M=1     N=3072   K=8192  max err/absdot 6.276e-07  ok
+model.layers.31.mlp.down_proj                M=17    N=3072   K=8192  max err/absdot 9.976e-07  ok
+model.layers.31.mlp.down_proj                M=64    N=3072   K=8192  max err/absdot 8.602e-07  ok
+model.layers.31.mlp.down_proj                M=2048  N=3072   K=8192  max |tile-cublas|/absdot 0.000e+00  bit-equal 100.00 %  dequant exact  ok
+VERDICT: PASS
+Read 2048 tokens successfully.
+Read 2047 oracle top-1 tokens; sha256 matches hf_meta.json (oracle ppl 5.486957).
+Linear path: INT4 tile GEMM (packed resident)
+Linear weight tensor bytes:  1811939328 (1.688 GiB)
+VRAM used by linears (cudaMemGetInfo delta): 1944059904 (1.811 GiB)
+Starting forward pass over 32 layers...
+
+=== INT4 tile GEMM (packed resident) ===
+Forward Pass Time:      3.939 s
+Mean Cross Entropy:     1.791114342
+Measured Perplexity:    5.996130
+HuggingFace Oracle PPL: 5.486957
+PPL Delta vs Oracle:    9.2797 %
+Top-1 Matches:          1821 / 2047 (88.96 %)
+Top-1 FNV-1a 64:        a98f6f4f81d1af65
+VRAM used at end of forward: 4067753984 (3.788 GiB)
+VERDICT: REPORT ONLY (INT4 pin /home/workspace/lakes/p7_glint/int4_run_20261104/pin/model.safetensors, no gate)
+Read 2048 tokens successfully.
+Read 2047 oracle top-1 tokens; sha256 matches hf_meta.json (oracle ppl 5.486957).
+Linear path: INT4 dequant-to-BF16 + cuBLAS
+Linear weight tensor bytes:  6442450944 (6.000 GiB)
+VRAM used by linears (cudaMemGetInfo delta): 6442450944 (6.000 GiB)
+Starting forward pass over 32 layers...
+
+=== INT4 dequant-to-BF16 + cuBLAS ===
+Forward Pass Time:      3.416 s
+Mean Cross Entropy:     1.791114342
+Measured Perplexity:    5.996130
+HuggingFace Oracle PPL: 5.486957
+PPL Delta vs Oracle:    9.2797 %
+Top-1 Matches:          1821 / 2047 (88.96 %)
+Top-1 FNV-1a 64:        a98f6f4f81d1af65
+VRAM used at end of forward: 8566145024 (7.978 GiB)
+VERDICT: REPORT ONLY (INT4 pin /home/workspace/lakes/p7_glint/int4_run_20261104/pin/model.safetensors, no gate)
+script_rc=0
