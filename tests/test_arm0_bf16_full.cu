@@ -72,6 +72,7 @@ static uint8_t *g_zero_plug = NULL;
 static uint8_t *g_sf_plugk_h[N_LAYERS][ARM0_N_LINEARS], *g_sf_plugk_d[N_LAYERS][ARM0_N_LINEARS];
 static uint8_t *g_sf_holek[N_LAYERS][ARM0_N_LINEARS]; static float *g_sf_amk[N_LAYERS][ARM0_N_LINEARS]; /* K-major hole and absmax in VRAM (ARM0_SELFETCH_OPT=1) */
 static int g_sf_opt = 0;
+static unsigned g_sf_step = 0; /* per-step salt for the random selection rule */
 static int g_stream = 0, g_res_layers = 0; /* ARM0_STREAM_RESIDENT_LAYERS=N: the first N layers keep their plug in VRAM, the rest stream */
 static size_t g_vram_base_free = 0;
 static GlintPlugStreamer *g_streamer = NULL;
@@ -399,6 +400,7 @@ static void dec_alloc(DecBufs &b) {
 /* One token at position pos (the KV cache holds positions 0..pos-1). Returns the argmax and the CE loss against `target`. */
 static void dec_step(const Arm0Model *model, DecBufs &b, int token, int pos, int target, Arm0LinearFn linear, void *ctx,
                      cublasHandle_t cb, int32_t *top1, float *loss) {
+    g_sf_step = (unsigned)pos * 7919u + (unsigned)token;
     if (g_stream && g_streamer && glint_plug_streamer_start(g_streamer) != 0) setup_fail("streamer start failed (decode step %d)", pos); /* each token is one pass over the layers */
     float hx[HIDDEN_DIM];
     for (int d = 0; d < HIDDEN_DIM; d++) hx[d] = __bfloat162float(model->h_embed[(size_t)token * HIDDEN_DIM + d]);
@@ -506,10 +508,16 @@ static void gemv_check(const uint8_t *hole, const uint8_t *plug, const float *am
  * in pinned host memory, by the kernel itself over PCIe (zero-copy gather), not staged through VRAM. The hole stays row-major in VRAM.
  * ARM0_SELFETCH=f (needs --glint-demand for a fast prefill; f in (0,1); 1 = full model, 0 = fold only), ARM0_SELFETCH_STATS=1 counts bytes,
  * ARM0_SELFETCH_CHECK=1 compares each result with a double-precision reference built from the same selection. ---- */
-static double g_sf_frac = -1; static int g_sf_stats = 0, g_sf_check = 0;
+static double g_sf_frac = -1; static int g_sf_stats = 0, g_sf_check = 0, g_sf_rule = 0;
+static int g_sf_hi[N_LAYERS]; static double g_sf_hi_f = -1;
 static int *g_sf_idx = NULL, *g_sf_cnt = NULL; static double g_sf_bytes = 0, g_sf_total = 0; static long g_sf_calls = 0;
 static double g_sfc_max = 0, g_sfc_sum = 0; static long g_sfc_n = 0; static double *g_sfc_yr = NULL; static float *g_sfc_y = NULL;
-__global__ void k_sf_select(const __nv_bfloat16 *x, int K, int nsel, int *idx, int *cnt_out) { /* one block of 1024 threads */
+__device__ static unsigned sf_key(const __nv_bfloat16 *x, int i, int rule, unsigned salt) {
+    if (rule == 0) return __float_as_uint(fabsf(__bfloat162float(x[i])));
+    unsigned h = salt * 0x9E3779B1u ^ (unsigned)i * 0x27D4EB2Fu; h ^= h >> 15; h *= 0x2C1B3C6Du; h ^= h >> 12; h *= 0x297A2D39u; h ^= h >> 15;
+    return h >> 2; /* below 0x3fffffff, a valid float-bit threshold range */
+}
+__global__ void k_sf_select(const __nv_bfloat16 *x, int K, int nsel, int *idx, int *cnt_out, int rule, unsigned salt) { /* one block of 1024 threads */
     __shared__ int cnt; __shared__ unsigned lo, hi; __shared__ int kept;
     if (threadIdx.x == 0) { lo = 0; hi = 0x7f800000u; kept = 0; }
     __syncthreads();
@@ -518,13 +526,13 @@ __global__ void k_sf_select(const __nv_bfloat16 *x, int K, int nsel, int *idx, i
         unsigned mid = lo + (hi - lo + 1) / 2;
         if (threadIdx.x == 0) cnt = 0;
         __syncthreads();
-        int c = 0; for (int i = threadIdx.x; i < K; i += blockDim.x) c += __float_as_uint(fabsf(__bfloat162float(x[i]))) >= mid;
+        int c = 0; for (int i = threadIdx.x; i < K; i += blockDim.x) c += sf_key(x, i, rule, salt) >= mid;
         atomicAdd(&cnt, c); __syncthreads();
         if (threadIdx.x == 0) { if (cnt >= nsel) lo = mid; else hi = mid - 1; }
         __syncthreads();
     }
     for (int i = threadIdx.x; i < K; i += blockDim.x)
-        if (__float_as_uint(fabsf(__bfloat162float(x[i]))) >= lo) { int p = atomicAdd(&kept, 1); idx[p] = i; }
+        if (sf_key(x, i, rule, salt) >= lo) { int p = atomicAdd(&kept, 1); idx[p] = i; }
     __syncthreads();
     if (threadIdx.x == 0) *cnt_out = kept;
 }
@@ -590,11 +598,12 @@ static void selfetch_linear(int layer, int which, const GlintLin &g, const __nv_
     const int N = ARM0_LINEAR[which].n_out, K = ARM0_LINEAR[which].k_in;
     if (!g_sf_idx) { CK(cudaMalloc(&g_sf_idx, 8192 * 4)); CK(cudaMalloc(&g_sf_cnt, 4)); }
     g_sf_total += (double)K * (N / 2); g_sf_calls++;
-    int nsel = (int)ceil(g_sf_frac * K - 1e-6); if (nsel < 1) nsel = 1; if (nsel > K) nsel = K;
-    if (g_sf_opt && g_sf_frac > 0.0) {
+    const double fl = (g_sf_hi_f >= 0 && g_sf_hi[layer]) ? g_sf_hi_f : g_sf_frac; const unsigned salt = g_sf_step * 131u + (unsigned)(layer * 8 + which);
+    int nsel = (int)ceil(fl * K - 1e-6); if (nsel < 1) nsel = 1; if (nsel > K) nsel = K;
+    if (g_sf_opt && fl > 0.0) {
         if (!g_sf_stage) { CK(cudaMalloc(&g_sf_stage, 26ull << 20)); CK(cudaMalloc(&g_sf_partial, (size_t)SF_NSPLIT * 16384 * 4)); CK(cudaStreamCreateWithFlags(&g_sf_sB, cudaStreamNonBlocking));
                            CK(cudaEventCreateWithFlags(&g_sf_evSel, cudaEventDisableTiming)); CK(cudaEventCreateWithFlags(&g_sf_evGat, cudaEventDisableTiming)); }
-        k_sf_select<<<1, 1024>>>(x, K, nsel, g_sf_idx, g_sf_cnt);                      /* stream 0 */
+        k_sf_select<<<1, 1024>>>(x, K, nsel, g_sf_idx, g_sf_cnt, g_sf_rule, salt);     /* stream 0 */
         CK(cudaEventRecord(g_sf_evSel, 0)); CK(cudaStreamWaitEvent(g_sf_sB, g_sf_evSel, 0));
         k_sf_gather<<<K, 128, 0, g_sf_sB>>>(g_sf_plugk_d[layer][which], g_sf_stage, g_sf_idx, g_sf_cnt, N / 2); /* PCIe gather, concurrent with the parent GEMV */
         CK(cudaEventRecord(g_sf_evGat, g_sf_sB));
@@ -605,8 +614,8 @@ static void selfetch_linear(int layer, int which, const GlintLin &g, const __nv_
         CK(cudaGetLastError());
     } else {
     int save = g_gemv_parent; g_gemv_parent = 1; gemv_launch(g.hole, g.plug, g.am, x, y, N, K); g_gemv_parent = save; /* parent value for every weight */
-    if (g_sf_frac <= 0.0) return;
-    k_sf_select<<<1, 1024>>>(x, K, nsel, g_sf_idx, g_sf_cnt);
+    if (fl <= 0.0) return;
+    k_sf_select<<<1, 1024>>>(x, K, nsel, g_sf_idx, g_sf_cnt, g_sf_rule, salt);
     k_sf_corr<<<(N + 127) / 128, 128>>>(g.hole, g.am, g_sf_plugk_d[layer][which], x, g_sf_idx, g_sf_cnt, y, N, K);
     CK(cudaGetLastError());
     }
@@ -727,7 +736,11 @@ int main(int argc, char** argv) {
         if (safetensors_open(&gs1, a) != 0 || safetensors_open(&gs2, b) != 0) setup_fail("cannot open glint pin %s", glint_dir);
         for (int l = 0; l < N_LAYERS; l++) for (int j = 0; j < ARM0_N_LINEARS; j++) glint_upload(&gs1, &gs2, l, j);
         if (g_demand) demand_init();
-        if (getenv("ARM0_SELFETCH")) { g_sf_frac = atof(getenv("ARM0_SELFETCH")); g_sf_stats = getenv("ARM0_SELFETCH_STATS") != NULL; g_sf_check = getenv("ARM0_SELFETCH_CHECK") != NULL; g_sf_opt = getenv("ARM0_SELFETCH_OPT") != NULL; g_gemv = 1; gemv_init(); printf("Selected-channel fetch decode: f=%.4f (K-major plug in pinned host memory, zero-copy)\n", g_sf_frac); }
+        if (getenv("ARM0_SELFETCH")) { g_sf_frac = atof(getenv("ARM0_SELFETCH")); g_sf_stats = getenv("ARM0_SELFETCH_STATS") != NULL; g_sf_check = getenv("ARM0_SELFETCH_CHECK") != NULL; g_sf_opt = getenv("ARM0_SELFETCH_OPT") != NULL;
+            { const char *rl = getenv("ARM0_SELFETCH_RULE"); g_sf_rule = rl && !strcmp(rl, "random") ? 1 : 0;
+              const char *hl = getenv("ARM0_SELFETCH_HI_LAYERS"); if (hl) { g_sf_hi_f = getenv("ARM0_SELFETCH_HI_F") ? atof(getenv("ARM0_SELFETCH_HI_F")) : -1;
+                  char buf[256]; strncpy(buf, hl, 255); buf[255] = 0; for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) { int li = atoi(tok); if (li >= 0 && li < N_LAYERS) g_sf_hi[li] = 1; } }
+              printf("Selected fetch: rule=%s opt=%d hi_layers_f=%.3f\n", g_sf_rule ? "random" : "act", g_sf_opt, g_sf_hi_f); } g_gemv = 1; gemv_init(); printf("Selected-channel fetch decode: f=%.4f (K-major plug in pinned host memory, zero-copy)\n", g_sf_frac); }
         if (getenv("ARM0_GEMV") && atoi(getenv("ARM0_GEMV")) == 1) { g_gemv = 1; gemv_init(); g_gemv_check = getenv("ARM0_GEMV_CHECK") && atoi(getenv("ARM0_GEMV_CHECK")) == 1; printf("GLINT decode GEMV enabled for M = 1 (parent_only=%d)\n", g_gemv_parent); }
         if (g_stream && g_res_layers < N_LAYERS) {
             CK(cudaStreamCreateWithFlags(&g_copy_stream, cudaStreamNonBlocking));
@@ -871,6 +884,25 @@ int main(int argc, char** argv) {
         printf("DECODE_GEN:"); for (int g : gen) printf(" %d", g); printf("\n");
         const char *dro = getenv("ARM0_DECODE_OUT"); if (dro) { FILE *fo = fopen(dro, "w"); for (size_t i = 0; i < gen.size(); i++) fprintf(fo, "%s%d", i ? " " : "", gen[i]); fprintf(fo, "\n"); fclose(fo); }
         fflush(stdout);
+    }
+
+    /* ARM0_DECODE_ROLL=P,S,PL,STRIDE (spec Amendment 3): greedy generation through the KV-cache decode path for P prompts (PL tokens of the
+     * evaluation text at offsets p*STRIDE), S generated tokens each; one line of ids per prompt to ARM0_DECODE_ROLL_OUT. */
+    if (getenv("ARM0_DECODE_ROLL")) {
+        int P = 12, S = 32, PL = 64, STR = 128; sscanf(getenv("ARM0_DECODE_ROLL"), "%d,%d,%d,%d", &P, &S, &PL, &STR);
+        static DecBufs rb; static int rb_alloc = 0; if (!rb_alloc) { dec_alloc(rb); rb_alloc = 1; }
+        const char *rro = getenv("ARM0_DECODE_ROLL_OUT"); FILE *rf = rro ? fopen(rro, "w") : NULL; double t_all = 0; long n_all = 0;
+        for (int p = 0; p < P; p++) {
+            const int base = p * STR; if (base + PL >= 2048) break;
+            int32_t t1 = 0; float ls = 0;
+            for (int pos = 0; pos < PL; pos++) dec_step(&model, rb, ev.tokens[base + pos], pos, 0, cublas_linear, &lin, lin.cublas, &t1, &ls);
+            std::vector<int> gen; gen.push_back(t1);
+            for (int st = 1; st < S; st++) { dec_step(&model, rb, gen[st - 1], PL + st - 1, 0, cublas_linear, &lin, lin.cublas, &t1, &ls); gen.push_back(t1); }
+            if (rf) { for (size_t i = 0; i < gen.size(); i++) fprintf(rf, "%s%d", i ? " " : "", gen[i]); fprintf(rf, "\n"); fflush(rf); }
+            n_all += gen.size();
+        }
+        if (rf) fclose(rf);
+        printf("DECODE_ROLL prompts=%d steps=%d generated=%ld\n", P, S, n_all); fflush(stdout);
     }
 
     /* ARM0_ROLLOUT=P,S,PL: greedy generation by repeated full forwards on a padded 2048-token buffer. Attention is causal, so
