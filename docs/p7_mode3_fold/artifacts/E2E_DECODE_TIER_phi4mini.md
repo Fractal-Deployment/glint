@@ -27,3 +27,17 @@ Reading the tier branch of `selfetch_linear` explained part of the gap above: it
 
 - *Measured:* about 20-25% faster; **still 6 tokens/s, M6 acceptance (10+) still not met.** The remaining excess over the benchmark's 77 ms + 38 ms is unexplained (selection, two correction passes, 128+ launches per token, the unpacked 3-bit emulation).
 - *Caveat on equivalence:* `DECODE_CHECK` (top-1 equal 105-107 of 112, bitwise-equal losses 0-2) varies from run to run in the **old** build too, so the decode path with the tier is not run-to-run deterministic (cause not investigated: the split-K sums are deterministic per the earlier work, so a stream ordering effect or a near-tie in greedy decoding is suspected, not established). The change was therefore checked for consistency with that existing spread, not for bit equality. A full rollout study of the new build was not rerun.
+
+## Where the 164 ms goes: timing ablation (`ARM0_SF_ABL`, same build, T-A, 32 decode steps, one run each)
+The flag skips phases in the tier branch (output is then wrong; **timing only**): bit 2 skips both gathers, bit 4 skips both corrections and sums, bit 8 skips band B entirely. (A bit that would skip the selection was not used: the gathers read its index list.)
+
+| skipped | what remains | ms/token |
+|---|---|---|
+| nothing | everything | 164.4 |
+| gathers | base + selection + corrections | 73.3 |
+| corrections | base + selection + gathers | 141.7 |
+| gathers and corrections | base + selection (+ stream/launch overhead) | 40.9 |
+| band B (gather and correction) | band A only (10%) | 69.6 |
+
+- *Measured:* base + selection costs 41 ms (the parent alone was 38.0 ms), so **selection is about 3 ms and cheap**. The **gathers cost about 100 ms** (141.7 - 40.9) for 644 MB of staged bytes (the 3-bit band is emulated at 4-bit size), about 6.4 GB/s; the **two correction passes cost about 32 ms** (73.3 - 40.9). The sum 41 + 100 + 32 = 173 ms is close to the measured 164 ms, so **the gather is not hidden by the parent GEMV** to any large degree.
+- *Inference (arithmetic, not tested):* the dependency is per linear: the channels to fetch are chosen from that linear's own input `x`, which exists only after the previous linear finished. The only work that can overlap a gather is therefore that linear's parent GEMV (about 0.3 ms per linear, 38 ms per token in all). So the floor for this design is the fetch time of the bytes at the PCIe rate plus the correction time, minus at most the base GEMV time: at 523 MB packed and 6.4-8 GB/s that is 65-82 ms of fetch + 32 ms of correction, about 100-115 ms, i.e. **9-10 tokens/s at best for T-A even with a perfect kernel**, with no margin. The 10+ tokens/s target at tracking quality needs either fewer bytes (no tracking arm exists below 523 MB) or to take the fetch off the critical path by choosing channels **before** the layer's input exists (prefetch from the previous layer's or previous token's activations, as DecDEC/Deja Vu style predictors do). Whether such a prediction tracks is untested.
