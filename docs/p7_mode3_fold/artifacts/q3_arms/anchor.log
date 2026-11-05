@@ -1,0 +1,14 @@
+Qwen3-4B-Base arms: mode=bf16 oracle PPL 4.514359
+Weights uploaded (BF16 anchor).
+Starting forward pass over 36 layers...
+
+=== Qwen3-4B-Base bf16 ===
+Forward Pass Time:      6.196 s
+Mean Cross Entropy:     1.506792
+Measured Perplexity:    4.512231
+HuggingFace Oracle PPL: 4.514359
+PPL Delta vs Oracle:    0.0471 %
+Top-1 Matches:          2017 / 2047
+Top-1 Agreement:        98.53 %
+VERDICT: REPORT ONLY (Qwen3 bf16)
+rc=0
