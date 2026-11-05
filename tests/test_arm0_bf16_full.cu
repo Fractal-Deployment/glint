@@ -583,8 +583,8 @@ __global__ void k_sf_ref(const uint8_t *hole, const uint8_t *plug, const float *
     }
     y[n] = acc;
 }
-__global__ void k_sf_gather(const uint8_t *src, uint8_t *dst, const int *idx, const int *cnt_p, int half) { /* grid = K blocks, block 128 */
-    int i = blockIdx.x; if (i >= *cnt_p) return;
+__global__ void k_sf_gather(const uint8_t *src, uint8_t *dst, const int *idx, const int *cnt_p, int half, const uint8_t *skip = nullptr) { /* grid = K blocks, block 128; skip[c] != 0: channel already staged by another band */
+    int i = blockIdx.x; if (i >= *cnt_p) return; if (skip && skip[idx[i]]) return;
     const uint4 *s = (const uint4 *)(src + (size_t)idx[i] * half); uint4 *d = (uint4 *)(dst + (size_t)i * half);
     for (int q = threadIdx.x; q < half / 16; q += blockDim.x) d[q] = s[q];
 }
@@ -613,7 +613,7 @@ __global__ void k_sf_sum(const float *partial, float *y, int N, int nsplit) {
 __global__ void k_sf_mark(const int *idx, const int *cnt_p, uint8_t *mask) { int i = blockIdx.x * blockDim.x + threadIdx.x; if (i < *cnt_p) mask[idx[i]] = 1; }
 static double g_tier_fracB = 0; static int *g_sf_idx2 = NULL, *g_sf_cnt2 = NULL; static uint8_t *g_sf_stage2 = NULL, *g_sf_mask = NULL; static float *g_sf_partial2 = NULL;
 static uint8_t *g_sf_stage = NULL; static float *g_sf_partial = NULL; static cudaStream_t g_sf_sB = NULL; static cudaEvent_t g_sf_evSel, g_sf_evGat;
-static const int SF_NSPLIT = 4;
+static const int SF_NSPLIT = 4; static int g_sf_abl = -1; /* ARM0_SF_ABL bitmask (timing ablation only, output is wrong): 1 skip select, 2 skip gathers, 4 skip corrections+sums */
 static void selfetch_linear(int layer, int which, const GlintLin &g, const __nv_bfloat16 *x, float *y) {
     const int N = ARM0_LINEAR[which].n_out, K = ARM0_LINEAR[which].k_in;
     if (!g_sf_idx) { CK(cudaMalloc(&g_sf_idx, 8192 * 4)); CK(cudaMalloc(&g_sf_cnt, 4)); }
@@ -624,16 +624,21 @@ static void selfetch_linear(int layer, int which, const GlintLin &g, const __nv_
         if (!g_sf_stage) { CK(cudaMalloc(&g_sf_stage, 26ull << 20)); CK(cudaMalloc(&g_sf_partial, (size_t)SF_NSPLIT * 16384 * 4)); }
         if (!g_sf_stage2) { CK(cudaMalloc(&g_sf_stage2, 26ull << 20)); CK(cudaMalloc(&g_sf_partial2, (size_t)SF_NSPLIT * 16384 * 4)); CK(cudaMalloc(&g_sf_idx2, 8192 * 4)); CK(cudaMalloc(&g_sf_cnt2, 4)); CK(cudaMalloc(&g_sf_mask, 8192)); }
         int nAll = (int)ceil((fl + g_tier_fracB) * K - 1e-6); if (nAll < nsel) nAll = nsel; if (nAll > K) nAll = K;
+        if (g_sf_abl < 0) g_sf_abl = getenv("ARM0_SF_ABL") ? atoi(getenv("ARM0_SF_ABL")) : 0;
+        if (!g_sf_sB) { CK(cudaStreamCreateWithFlags(&g_sf_sB, cudaStreamNonBlocking)); CK(cudaEventCreateWithFlags(&g_sf_evSel, cudaEventDisableTiming)); CK(cudaEventCreateWithFlags(&g_sf_evGat, cudaEventDisableTiming)); }
         k_sf_select<<<1, 1024>>>(x, K, nsel, g_sf_idx, g_sf_cnt, g_sf_rule, salt);
         k_sf_select<<<1, 1024>>>(x, K, nAll, g_sf_idx2, g_sf_cnt2, g_sf_rule, salt);
         CK(cudaMemsetAsync(g_sf_mask, 0, K)); k_sf_mark<<<(K + 255) / 256, 256>>>(g_sf_idx, g_sf_cnt, g_sf_mask);
+        CK(cudaEventRecord(g_sf_evSel, 0)); CK(cudaStreamWaitEvent(g_sf_sB, g_sf_evSel, 0));
+        if (!(g_sf_abl & 2)) k_sf_gather<<<K, 128, 0, g_sf_sB>>>(g_sf_plugk_d[layer][which], g_sf_stage, g_sf_idx, g_sf_cnt, N / 2);                        /* band A, PCIe, concurrent with the parent GEMV */
+        if (!(g_sf_abl & 2) && !(g_sf_abl & 8)) k_sf_gather<<<K, 128, 0, g_sf_sB>>>(g_sf_plugk_d[layer][which], g_sf_stage2, g_sf_idx2, g_sf_cnt2, N / 2, g_sf_mask);          /* band B only: channels of band A are not fetched twice */
+        CK(cudaEventRecord(g_sf_evGat, g_sf_sB));
         int save = g_gemv_parent; g_gemv_parent = 1; gemv_launch(g.hole, g.plug, g.am, x, y, N, K); g_gemv_parent = save;
-        k_sf_gather<<<K, 128>>>(g_sf_plugk_d[layer][which], g_sf_stage, g_sf_idx, g_sf_cnt, N / 2);
-        k_sf_corr2<<<dim3((N / 2 + 127) / 128, SF_NSPLIT), 128>>>(g_sf_holek[layer][which], g_sf_amk[layer][which], g_sf_stage, x, g_sf_idx, g_sf_cnt, g_sf_partial, N, SF_NSPLIT, 0, nullptr);
-        k_sf_sum<<<(N + 127) / 128, 128>>>(g_sf_partial, y, N, SF_NSPLIT);
-        k_sf_gather<<<K, 128>>>(g_sf_plugk_d[layer][which], g_sf_stage2, g_sf_idx2, g_sf_cnt2, N / 2);
-        k_sf_corr2<<<dim3((N / 2 + 127) / 128, SF_NSPLIT), 128>>>(g_sf_holek[layer][which], g_sf_amk[layer][which], g_sf_stage2, x, g_sf_idx2, g_sf_cnt2, g_sf_partial2, N, SF_NSPLIT, 1, g_sf_mask);
-        k_sf_sum<<<(N + 127) / 128, 128>>>(g_sf_partial2, y, N, SF_NSPLIT);
+        CK(cudaStreamWaitEvent(0, g_sf_evGat, 0));
+        if (!(g_sf_abl & 4)) k_sf_corr2<<<dim3((N / 2 + 127) / 128, SF_NSPLIT), 128>>>(g_sf_holek[layer][which], g_sf_amk[layer][which], g_sf_stage, x, g_sf_idx, g_sf_cnt, g_sf_partial, N, SF_NSPLIT, 0, nullptr);
+        if (!(g_sf_abl & 4)) k_sf_sum<<<(N + 127) / 128, 128>>>(g_sf_partial, y, N, SF_NSPLIT);
+        if (!(g_sf_abl & 4) && !(g_sf_abl & 8)) k_sf_corr2<<<dim3((N / 2 + 127) / 128, SF_NSPLIT), 128>>>(g_sf_holek[layer][which], g_sf_amk[layer][which], g_sf_stage2, x, g_sf_idx2, g_sf_cnt2, g_sf_partial2, N, SF_NSPLIT, 1, g_sf_mask);
+        if (!(g_sf_abl & 4) && !(g_sf_abl & 8)) k_sf_sum<<<(N + 127) / 128, 128>>>(g_sf_partial2, y, N, SF_NSPLIT);
         CK(cudaGetLastError());
     } else if (g_sf_opt && fl > 0.0) {
         if (!g_sf_stage) { CK(cudaMalloc(&g_sf_stage, 26ull << 20)); CK(cudaMalloc(&g_sf_partial, (size_t)SF_NSPLIT * 16384 * 4)); CK(cudaStreamCreateWithFlags(&g_sf_sB, cudaStreamNonBlocking));
