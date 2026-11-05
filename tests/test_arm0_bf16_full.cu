@@ -132,6 +132,7 @@ static float g_frac = 1.0f;
 static unsigned g_seed = 42;
 static const char *g_static_out = NULL;
 static __constant__ float c_cells[16][16];
+static __constant__ float c_cellsB[16][16]; /* band-B table of the tiered plug (spec Amendment 5): child cells merged to ARM0_TIER_BITS_B bits */
 static __constant__ float c_parent[16];
 static __nv_bfloat16 *g_wp = NULL, *g_wd = NULL, *g_xm = NULL;
 static uint8_t *g_sel = NULL;
@@ -242,6 +243,11 @@ __global__ void k_dem_static_acc(const __nv_bfloat16 *x, int m, int k_in, float 
 }
 /* GLINT_PLUG_BITS=b (spec Amendment 4): emulate a b-bit child code. The 2^(4-b) adjacent child indices that would share a b-bit code all take the
  * mean of their cell values (the merged bin's reconstruction level). b = 4 (default) is the real table. Bytes are counted analytically elsewhere. */
+static void cells_bits_fixed(float out[16][16], int b) {
+    memcpy(out, GLINT_CELLS, sizeof(float) * 256); if (b >= 4 || b < 1) return;
+    const int bin = 1 << (4 - b);
+    for (int h = 0; h < 16; h++) for (int s0 = 0; s0 < 16; s0 += bin) { double m = 0; for (int k = 0; k < bin; k++) m += out[h][s0 + k]; m /= bin; for (int k = 0; k < bin; k++) out[h][s0 + k] = (float)m; }
+}
 static void cells_for_bits(float out[16][16]) {
     memcpy(out, GLINT_CELLS, sizeof(float) * 256);
     const char *e = getenv("GLINT_PLUG_BITS"); int b = e ? atoi(e) : 4; if (b >= 4 || b < 1) return;
@@ -585,14 +591,14 @@ __global__ void k_sf_gather(const uint8_t *src, uint8_t *dst, const int *idx, co
 /* Correction over the staged channels with K-major hole and absmax: a thread owns an output pair (2t, 2t+1); blockIdx.y splits the channel list
  * and writes its own partial sum (deterministic; summed by k_sf_sum). */
 __global__ void k_sf_corr2(const uint8_t *hole_k, const float *am_k, const uint8_t *stage, const __nv_bfloat16 *x, const int *idx, const int *cnt_p,
-                           float *partial, int N, int nsplit) {
+                           float *partial, int N, int nsplit, int tabB, const uint8_t *skip) {
     __shared__ float s_d[256];
-    for (int i = threadIdx.x; i < 256; i += blockDim.x) s_d[i] = c_cells[i >> 4][i & 15] - c_parent[i >> 4];
+    for (int i = threadIdx.x; i < 256; i += blockDim.x) s_d[i] = (tabB ? c_cellsB[i >> 4][i & 15] : c_cells[i >> 4][i & 15]) - c_parent[i >> 4];
     __syncthreads();
     const int half = N / 2, t = blockIdx.x * blockDim.x + threadIdx.x; if (t >= half) return;
     const int cnt = *cnt_p; float a0 = 0.f, a1 = 0.f;
     for (int i = blockIdx.y; i < cnt; i += nsplit) {
-        const int c = idx[i]; const float xv = __bfloat162float(x[c]);
+        const int c = idx[i]; if (skip && skip[c]) continue; const float xv = __bfloat162float(x[c]);
         const uint8_t hb = hole_k[(size_t)c * half + t], pb = stage[(size_t)i * half + t];
         const float2 a = *(const float2 *)(am_k + (size_t)(c >> 6) * N + 2 * t);
         a0 += (s_d[((hb & 15) << 4) | (pb & 15)] * a.x) * xv;
@@ -604,6 +610,8 @@ __global__ void k_sf_sum(const float *partial, float *y, int N, int nsplit) {
     int n = blockIdx.x * blockDim.x + threadIdx.x; if (n >= N) return;
     float s = y[n]; for (int sp = 0; sp < nsplit; sp++) s += partial[(size_t)sp * N + n]; y[n] = s;
 }
+__global__ void k_sf_mark(const int *idx, const int *cnt_p, uint8_t *mask) { int i = blockIdx.x * blockDim.x + threadIdx.x; if (i < *cnt_p) mask[idx[i]] = 1; }
+static double g_tier_fracB = 0; static int *g_sf_idx2 = NULL, *g_sf_cnt2 = NULL; static uint8_t *g_sf_stage2 = NULL, *g_sf_mask = NULL; static float *g_sf_partial2 = NULL;
 static uint8_t *g_sf_stage = NULL; static float *g_sf_partial = NULL; static cudaStream_t g_sf_sB = NULL; static cudaEvent_t g_sf_evSel, g_sf_evGat;
 static const int SF_NSPLIT = 4;
 static void selfetch_linear(int layer, int which, const GlintLin &g, const __nv_bfloat16 *x, float *y) {
@@ -612,7 +620,22 @@ static void selfetch_linear(int layer, int which, const GlintLin &g, const __nv_
     g_sf_total += (double)K * (N / 2); g_sf_calls++;
     const double fl = (g_sf_hi_f >= 0 && g_sf_hi[layer]) ? g_sf_hi_f : g_sf_frac; const unsigned salt = g_sf_step * 131u + (unsigned)(layer * 8 + which);
     int nsel = (int)ceil(fl * K - 1e-6); if (nsel < 1) nsel = 1; if (nsel > K) nsel = K;
-    if (g_sf_opt && fl > 0.0) {
+    if (g_sf_opt && fl > 0.0 && g_tier_fracB > 0.0) { /* tiered plug: top nA at the table in c_cells, the next band at c_cellsB, the rest base-only */
+        if (!g_sf_stage) { CK(cudaMalloc(&g_sf_stage, 26ull << 20)); CK(cudaMalloc(&g_sf_partial, (size_t)SF_NSPLIT * 16384 * 4)); }
+        if (!g_sf_stage2) { CK(cudaMalloc(&g_sf_stage2, 26ull << 20)); CK(cudaMalloc(&g_sf_partial2, (size_t)SF_NSPLIT * 16384 * 4)); CK(cudaMalloc(&g_sf_idx2, 8192 * 4)); CK(cudaMalloc(&g_sf_cnt2, 4)); CK(cudaMalloc(&g_sf_mask, 8192)); }
+        int nAll = (int)ceil((fl + g_tier_fracB) * K - 1e-6); if (nAll < nsel) nAll = nsel; if (nAll > K) nAll = K;
+        k_sf_select<<<1, 1024>>>(x, K, nsel, g_sf_idx, g_sf_cnt, g_sf_rule, salt);
+        k_sf_select<<<1, 1024>>>(x, K, nAll, g_sf_idx2, g_sf_cnt2, g_sf_rule, salt);
+        CK(cudaMemsetAsync(g_sf_mask, 0, K)); k_sf_mark<<<(K + 255) / 256, 256>>>(g_sf_idx, g_sf_cnt, g_sf_mask);
+        int save = g_gemv_parent; g_gemv_parent = 1; gemv_launch(g.hole, g.plug, g.am, x, y, N, K); g_gemv_parent = save;
+        k_sf_gather<<<K, 128>>>(g_sf_plugk_d[layer][which], g_sf_stage, g_sf_idx, g_sf_cnt, N / 2);
+        k_sf_corr2<<<dim3((N / 2 + 127) / 128, SF_NSPLIT), 128>>>(g_sf_holek[layer][which], g_sf_amk[layer][which], g_sf_stage, x, g_sf_idx, g_sf_cnt, g_sf_partial, N, SF_NSPLIT, 0, nullptr);
+        k_sf_sum<<<(N + 127) / 128, 128>>>(g_sf_partial, y, N, SF_NSPLIT);
+        k_sf_gather<<<K, 128>>>(g_sf_plugk_d[layer][which], g_sf_stage2, g_sf_idx2, g_sf_cnt2, N / 2);
+        k_sf_corr2<<<dim3((N / 2 + 127) / 128, SF_NSPLIT), 128>>>(g_sf_holek[layer][which], g_sf_amk[layer][which], g_sf_stage2, x, g_sf_idx2, g_sf_cnt2, g_sf_partial2, N, SF_NSPLIT, 1, g_sf_mask);
+        k_sf_sum<<<(N + 127) / 128, 128>>>(g_sf_partial2, y, N, SF_NSPLIT);
+        CK(cudaGetLastError());
+    } else if (g_sf_opt && fl > 0.0) {
         if (!g_sf_stage) { CK(cudaMalloc(&g_sf_stage, 26ull << 20)); CK(cudaMalloc(&g_sf_partial, (size_t)SF_NSPLIT * 16384 * 4)); CK(cudaStreamCreateWithFlags(&g_sf_sB, cudaStreamNonBlocking));
                            CK(cudaEventCreateWithFlags(&g_sf_evSel, cudaEventDisableTiming)); CK(cudaEventCreateWithFlags(&g_sf_evGat, cudaEventDisableTiming)); }
         k_sf_select<<<1, 1024>>>(x, K, nsel, g_sf_idx, g_sf_cnt, g_sf_rule, salt);     /* stream 0 */
@@ -621,7 +644,7 @@ static void selfetch_linear(int layer, int which, const GlintLin &g, const __nv_
         CK(cudaEventRecord(g_sf_evGat, g_sf_sB));
         int save = g_gemv_parent; g_gemv_parent = 1; gemv_launch(g.hole, g.plug, g.am, x, y, N, K); g_gemv_parent = save;
         CK(cudaStreamWaitEvent(0, g_sf_evGat, 0));
-        k_sf_corr2<<<dim3((N / 2 + 127) / 128, SF_NSPLIT), 128>>>(g_sf_holek[layer][which], g_sf_amk[layer][which], g_sf_stage, x, g_sf_idx, g_sf_cnt, g_sf_partial, N, SF_NSPLIT);
+        k_sf_corr2<<<dim3((N / 2 + 127) / 128, SF_NSPLIT), 128>>>(g_sf_holek[layer][which], g_sf_amk[layer][which], g_sf_stage, x, g_sf_idx, g_sf_cnt, g_sf_partial, N, SF_NSPLIT, 0, nullptr);
         k_sf_sum<<<(N + 127) / 128, 128>>>(g_sf_partial, y, N, SF_NSPLIT);
         CK(cudaGetLastError());
     } else {
@@ -749,6 +772,8 @@ int main(int argc, char** argv) {
         for (int l = 0; l < N_LAYERS; l++) for (int j = 0; j < ARM0_N_LINEARS; j++) glint_upload(&gs1, &gs2, l, j);
         if (g_demand) demand_init();
         if (getenv("ARM0_SELFETCH")) { g_sf_frac = atof(getenv("ARM0_SELFETCH")); g_sf_stats = getenv("ARM0_SELFETCH_STATS") != NULL; g_sf_check = getenv("ARM0_SELFETCH_CHECK") != NULL; g_sf_opt = getenv("ARM0_SELFETCH_OPT") != NULL;
+            if (getenv("ARM0_TIER_FRAC_B")) { g_tier_fracB = atof(getenv("ARM0_TIER_FRAC_B")); int bB = getenv("ARM0_TIER_BITS_B") ? atoi(getenv("ARM0_TIER_BITS_B")) : 3;
+                float tb[16][16]; cells_bits_fixed(tb, bB); CK(cudaMemcpyToSymbol(c_cellsB, tb, sizeof(float) * 256)); printf("Tiered plug: band A = ARM0_SELFETCH at the main table, band B = next %.3f of channels at %d-bit merged cells\n", g_tier_fracB, bB); }
             { const char *rl = getenv("ARM0_SELFETCH_RULE"); g_sf_rule = rl && !strcmp(rl, "random") ? 1 : 0;
               const char *hl = getenv("ARM0_SELFETCH_HI_LAYERS"); if (hl) { g_sf_hi_f = getenv("ARM0_SELFETCH_HI_F") ? atof(getenv("ARM0_SELFETCH_HI_F")) : -1;
                   char buf[256]; strncpy(buf, hl, 255); buf[255] = 0; for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) { int li = atoi(tok); if (li >= 0 && li < N_LAYERS) g_sf_hi[li] = 1; } }
