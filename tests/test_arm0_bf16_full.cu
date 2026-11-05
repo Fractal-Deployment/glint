@@ -942,6 +942,26 @@ int main(int argc, char** argv) {
         printf("DECODE_ROLL prompts=%d steps=%d generated=%ld\n", P, S, n_all); fflush(stdout);
     }
 
+    /* ARM0_INDUCT=N,L (spec Amendment 8): induction/retrieval probe. N sequences of L pseudo-random token ids (fixed LCG, ids in
+     * [1000,30000)) are shown twice in a row through the KV-cache decode path; at every position of the second copy after its first
+     * token the model's greedy next token is compared with the true next token of the copy (teacher forced). Reports accuracy. */
+    if (getenv("ARM0_INDUCT")) {
+        int N = 8, L = 48; sscanf(getenv("ARM0_INDUCT"), "%d,%d", &N, &L);
+        static DecBufs ib; static int ib_alloc = 0; if (!ib_alloc) { dec_alloc(ib); ib_alloc = 1; }
+        long hit = 0, tot = 0; uint32_t s = 12345u;
+        for (int n = 0; n < N; n++) {
+            std::vector<int32_t> seq(L); for (int i = 0; i < L; i++) { s = s * 1664525u + 1013904223u; seq[i] = 1000 + (int)((s >> 8) % 29000u); }
+            int32_t t1 = 0; float ls = 0; long h = 0, t = 0;
+            for (int pos = 0; pos < 2 * L - 1; pos++) {
+                int32_t tok = seq[pos % L];
+                dec_step(&model, ib, tok, pos, 0, cublas_linear, &lin, lin.cublas, &t1, &ls);
+                if (pos >= L) { t++; if (t1 == seq[(pos + 1) % L]) h++; }
+            }
+            hit += h; tot += t; printf("INDUCT seq=%d hits=%ld/%ld\n", n, h, t);
+        }
+        printf("INDUCT_ACC %.4f (%ld/%ld) sequences=%d length=%d\n", (double)hit / tot, hit, tot, N, L); fflush(stdout);
+    }
+
     /* ARM0_ROLLOUT=P,S,PL: greedy generation by repeated full forwards on a padded 2048-token buffer. Attention is causal, so
      * the logits at the last real position do not depend on what follows it. Prompt p is eval tokens [p*512, p*512+PL) placed at
      * position 0 (the rest of the buffer is filler that is overwritten as tokens are generated). Writes the generated ids, one
