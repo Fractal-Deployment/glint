@@ -621,7 +621,7 @@ static void selfetch_linear(int layer, int which, const GlintLin &g, const __nv_
     g_sf_total += (double)K * (N / 2); g_sf_calls++;
     const double fl = (g_sf_hi_f >= 0 && g_sf_hi[layer]) ? g_sf_hi_f : g_sf_frac; const unsigned salt = g_sf_step * 131u + (unsigned)(layer * 8 + which);
     int nsel = (int)ceil(fl * K - 1e-6); if (nsel < 1) nsel = 1; if (nsel > K) nsel = K;
-    const __nv_bfloat16 *xs = x; if (g_sf_stale) { __nv_bfloat16 *&pv = g_sf_prevx[layer][which]; if (!pv) { CK(cudaMalloc(&pv, (size_t)K * 2)); CK(cudaMemset(pv, 0, (size_t)K * 2)); } xs = pv; } /* stale rule: rank channels by the previous token's input to this linear, known before this layer runs */
+    const __nv_bfloat16 *xs = x; if (g_sf_stale) { __nv_bfloat16 *&pv = g_sf_prevx[layer][which]; if (!pv) { CK(cudaMalloc(&pv, (size_t)K * 2)); CK(cudaMemset(pv, 0, (size_t)K * 2)); } if (g_sf_stale == 2 && layer > 0 && g_sf_prevx[layer - 1][which]) xs = g_sf_prevx[layer - 1][which]; else xs = pv; } /* stale rule (2 = prevlayer: this token's input to the same linear one layer earlier): rank channels by the previous token's input to this linear, known before this layer runs */
     if (g_sf_opt && fl > 0.0 && g_tier_fracB > 0.0) { /* tiered plug: top nA at the table in c_cells, the next band at c_cellsB, the rest base-only */
         if (!g_sf_stage) { CK(cudaMalloc(&g_sf_stage, 26ull << 20)); CK(cudaMalloc(&g_sf_partial, (size_t)SF_NSPLIT * 16384 * 4)); }
         if (!g_sf_stage2) { CK(cudaMalloc(&g_sf_stage2, 26ull << 20)); CK(cudaMalloc(&g_sf_partial2, (size_t)SF_NSPLIT * 16384 * 4)); CK(cudaMalloc(&g_sf_idx2, 8192 * 4)); CK(cudaMalloc(&g_sf_cnt2, 4)); CK(cudaMalloc(&g_sf_mask, 8192)); }
@@ -782,7 +782,7 @@ int main(int argc, char** argv) {
         if (getenv("ARM0_SELFETCH")) { g_sf_frac = atof(getenv("ARM0_SELFETCH")); g_sf_stats = getenv("ARM0_SELFETCH_STATS") != NULL; g_sf_check = getenv("ARM0_SELFETCH_CHECK") != NULL; g_sf_opt = getenv("ARM0_SELFETCH_OPT") != NULL;
             if (getenv("ARM0_TIER_FRAC_B")) { g_tier_fracB = atof(getenv("ARM0_TIER_FRAC_B")); int bB = getenv("ARM0_TIER_BITS_B") ? atoi(getenv("ARM0_TIER_BITS_B")) : 3;
                 float tb[16][16]; cells_bits_fixed(tb, bB); CK(cudaMemcpyToSymbol(c_cellsB, tb, sizeof(float) * 256)); printf("Tiered plug: band A = ARM0_SELFETCH at the main table, band B = next %.3f of channels at %d-bit merged cells\n", g_tier_fracB, bB); }
-            { const char *rl = getenv("ARM0_SELFETCH_RULE"); g_sf_rule = rl && !strcmp(rl, "random") ? 1 : 0; g_sf_stale = rl && !strcmp(rl, "stale");
+            { const char *rl = getenv("ARM0_SELFETCH_RULE"); g_sf_rule = rl && !strcmp(rl, "random") ? 1 : 0; g_sf_stale = rl && !strcmp(rl, "stale") ? 1 : (rl && !strcmp(rl, "prevlayer") ? 2 : 0);
               const char *hl = getenv("ARM0_SELFETCH_HI_LAYERS"); if (hl) { g_sf_hi_f = getenv("ARM0_SELFETCH_HI_F") ? atof(getenv("ARM0_SELFETCH_HI_F")) : -1;
                   char buf[256]; strncpy(buf, hl, 255); buf[255] = 0; for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) { int li = atoi(tok); if (li >= 0 && li < N_LAYERS) g_sf_hi[li] = 1; } }
               printf("Selected fetch: rule=%s opt=%d hi_layers_f=%.3f\n", g_sf_rule ? "random" : "act", g_sf_opt, g_sf_hi_f); } g_gemv = 1; gemv_init(); printf("Selected-channel fetch decode: f=%.4f (K-major plug in pinned host memory, zero-copy)\n", g_sf_frac); }

@@ -23,3 +23,14 @@ One run per arm; token-exact agreement carries about 8 points of numerical noise
 
 ## Reproduce
 `ARM0_DECODE_ROLL=12,32,64,128 ARM0_DECODE_ROLL_OUT=out.txt ARM0_DEMAND_RULE=act ARM0_DEMAND_F=1 ARM0_SELFETCH=<k1> ARM0_SELFETCH_OPT=1 ARM0_SELFETCH_RULE=stale [ARM0_TIER_FRAC_B=<k2> ARM0_TIER_BITS_B=3] bf16full --glint-demand PIN MODEL ART` (branch `exp/p7-stale-selection`, stacked on `fix/p7-tier-overlap-stacked`).
+
+## Second predictor: previous layer, same token (`ARM0_SELFETCH_RULE=prevlayer`)
+Same rule and bar as above (agreement at least 82.5% and matched prefix at least 20), stated before the runs. Channels of a linear are ranked by this token's input to the **same linear one layer earlier** (layer 0 falls back to the previous token's input). The correction still uses the current x. One run per arm, same rollout.
+
+| Arm | matched prefix /32 | agreement | all-match |
+|---|---|---|---|
+| T-A, previous layer | 11.08 | 49.0% | 3 / 12 |
+| 4-bit `act` 50%, previous layer | 13.33 | 49.5% | 4 / 12 |
+
+- **Does not track** (49.0% and 49.5% against 82.5%). It is also **worse than the previous-token predictor** for the 50% arm (49.5% against 71.6%) and about equal for T-A (49.0% against 51.0%); at 805 MB it sits near current-|x| `act` 10% (161 MB, 55.5%).
+- *Measured:* the input of the same linear in the neighbouring layer predicts the important channels worse than the same linear's input on the previous token. *Not tested:* a learned predictor, a mix of both, or predictors keyed to the residual stream; the per-linear bound on speed (`E2E_DECODE_TIER_phi4mini.md`) stands, and no arm measured tracks and reaches 10 tokens/s.
