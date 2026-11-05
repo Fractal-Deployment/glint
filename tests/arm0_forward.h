@@ -640,6 +640,13 @@ static void arm0_forward(const Arm0Model *model, const int32_t tokens[2048], Arm
     CK(cudaMemcpy(out->losses, d_losses, 2047 * sizeof(float), cudaMemcpyDeviceToHost));
     CK(cudaMemcpy(out->top1, d_top1, 2047 * sizeof(int32_t), cudaMemcpyDeviceToHost));
     free(h_x);
+    /* Free the per-call device buffers so arm0_forward can be called repeatedly (rollout); previously they leaked and the
+     * fourth call ran out of memory. Results are already copied to the host above. */
+    cudaFree(d_x); cudaFree(d_h); cudaFree(d_h_bf16); cudaFree(d_qkv); cudaFree(d_q); cudaFree(d_k); cudaFree(d_v);
+    cudaFree(d_attn_out); cudaFree(d_attn_out_bf16); cudaFree(d_attn_proj); cudaFree(d_gate_up); cudaFree(d_act);
+    cudaFree(d_act_bf16); cudaFree(d_down); cudaFree(d_x_final_bf16);
+    cudaFree(d_targets); cudaFree(d_top1); cudaFree(d_losses); cudaFree(d_logits_chunk);
+    if (d_ref) { cudaFree(d_ref); cudaFree(d_kl); cudaFree(d_rt1); cudaFree(d_qt1); }
 }
 
 #endif

@@ -500,6 +500,30 @@ int main(int argc, char** argv) {
         fclose(fp);
     }
 
+    /* ARM0_ROLLOUT=P,S,PL: greedy generation by repeated full forwards on a padded 2048-token buffer. Attention is causal, so
+     * the logits at the last real position do not depend on what follows it. Prompt p is eval tokens [p*512, p*512+PL) placed at
+     * position 0 (the rest of the buffer is filler that is overwritten as tokens are generated). Writes the generated ids, one
+     * line per prompt, to ARM0_ROLLOUT_OUT. Run without ARM0_LOGITS_OUT/REF. See DEMAND_MAP_SPEC (rollout amendment). */
+    if (getenv("ARM0_ROLLOUT")) {
+        int P = 3, S = 16, PL = 64; sscanf(getenv("ARM0_ROLLOUT"), "%d,%d,%d", &P, &S, &PL);
+        const char *ro = getenv("ARM0_ROLLOUT_OUT"); FILE *fo = ro ? fopen(ro, "w") : NULL;
+        unsetenv("ARM0_LOGITS_OUT"); unsetenv("ARM0_LOGITS_REF");
+        static int32_t rbuf[2048];
+        for (int p = 0; p < P; p++) {
+            for (int i = 0; i < 2048; i++) rbuf[i] = ev.tokens[(p * 512 + i) % 2048];
+            std::vector<int> gen;
+            for (int st = 0; st < S; st++) {
+                int len = PL + st;
+                arm0_forward(&model, rbuf, cublas_linear, &lin, lin.cublas, NULL, &g_result);
+                int nxt = g_result.top1[len - 1]; rbuf[len] = nxt; gen.push_back(nxt);
+            }
+            printf("ROLLOUT prompt %d:", p); for (int g : gen) printf(" %d", g); printf("\n");
+            if (fo) { for (size_t i = 0; i < gen.size(); i++) fprintf(fo, "%s%d", i ? " " : "", gen[i]); fprintf(fo, "\n"); }
+            fflush(stdout);
+        }
+        if (fo) fclose(fo);
+    }
+
     safetensors_close(&st1);
     safetensors_close(&st2);
     cublasDestroy(lin.cublas);
