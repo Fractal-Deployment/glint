@@ -240,8 +240,20 @@ __global__ void k_dem_static_acc(const __nv_bfloat16 *x, int m, int k_in, float 
     for (int st = 64; st > 0; st >>= 1) { if (threadIdx.x < st) sh[threadIdx.x] += sh[threadIdx.x + st]; __syncthreads(); }
     if (threadIdx.x == 0) out[b] = (float)(sh[0] / mm);
 }
+/* GLINT_PLUG_BITS=b (spec Amendment 4): emulate a b-bit child code. The 2^(4-b) adjacent child indices that would share a b-bit code all take the
+ * mean of their cell values (the merged bin's reconstruction level). b = 4 (default) is the real table. Bytes are counted analytically elsewhere. */
+static void cells_for_bits(float out[16][16]) {
+    memcpy(out, GLINT_CELLS, sizeof(float) * 256);
+    const char *e = getenv("GLINT_PLUG_BITS"); int b = e ? atoi(e) : 4; if (b >= 4 || b < 1) return;
+    const int bin = 1 << (4 - b);
+    for (int h = 0; h < 16; h++) for (int s0 = 0; s0 < 16; s0 += bin) {
+        double m = 0; for (int k = 0; k < bin; k++) m += out[h][s0 + k];
+        m /= bin; for (int k = 0; k < bin; k++) out[h][s0 + k] = (float)m;
+    }
+    printf("GLINT_PLUG_BITS=%d: child cells merged in bins of %d\n", b, bin);
+}
 static void demand_init() {
-    CK(cudaMemcpyToSymbol(c_cells, GLINT_CELLS, sizeof(float) * 256));
+    { float tbl[16][16]; cells_for_bits(tbl); CK(cudaMemcpyToSymbol(c_cells, tbl, sizeof(float) * 256)); }
     CK(cudaMemcpyToSymbol(c_parent, NF4_CODE, sizeof(float) * 16));
     size_t maxn = 0; for (int j = 0; j < ARM0_N_LINEARS; j++) { size_t n = (size_t)ARM0_LINEAR[j].n_out * ARM0_LINEAR[j].k_in; if (n > maxn) maxn = n; }
     CK(cudaMalloc(&g_wp, maxn * 2)); CK(cudaMalloc(&g_wd, maxn * 2));
@@ -459,7 +471,7 @@ __global__ void k_glint_gemv(const uint8_t *hole, const uint8_t *plug, const flo
     if (lane == 0) y[row] = acc;
 }
 static void gemv_init() {
-    CK(cudaMemcpyToSymbol(c_cells, GLINT_CELLS, sizeof(float) * 256));
+    { float tbl[16][16]; cells_for_bits(tbl); CK(cudaMemcpyToSymbol(c_cells, tbl, sizeof(float) * 256)); }
     CK(cudaMemcpyToSymbol(c_parent, NF4_CODE, sizeof(float) * 16));
     const char *po = getenv("GLINT_PARENT_ONLY"); g_gemv_parent = po && po[0] == '1';
 }
