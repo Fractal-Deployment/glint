@@ -54,3 +54,11 @@ Let `A` = the full hole+plug arm (PPL 5.479566, top-1 2007/2047; its KL against 
 
 ## Implementation notes (not results)
 The delta table is `GLINT_CELLS[h][p] - PARENT[h]`. The kernel keeps its table in `__constant__` memory, so the harness swaps tables between the two launches of a linear. The mask is applied to `x` on the device before the delta launch. Per-token top-f selection is done on the device per linear. Activations for the oracle rule come from the true decoded `D`.
+
+## Amendment 2 (rollout, written before any rollout data; 2026-11-04)
+Teacher-forced prefill hides compounding. Rollout measures it with greedy generation by repeated full forwards (causal attention makes the logits at the last real position independent of what follows, so a padded 2048-token buffer is exact; this is not a KV-cache decode path, which does not exist in this repository).
+- **Setup:** P = 3 prompts, each the first PL = 64 tokens of the evaluation text at offsets 0, 512 and 1024 placed at position 0; S = 16 greedy steps. 48 generated tokens per arm.
+- **Arms:** BF16 CUDA anchor (reference noise floor), full plug (f = 1), fold only (f = 0), `act` channel f = 0.25, `act` channel f = 0.1, `act` block f = 0.25, `random` channel f = 0.1 (seed 42).
+- **Metrics:** for each arm against the f = 1 arm: mean matched-prefix length (tokens before the first difference, per prompt) and same-position agreement over all 48 tokens; and agreement in steps 9-16 minus steps 1-8 (the drop). The anchor against f = 1 gives the noise floor: two near-identical models still diverge at near-ties.
+- **Rules (fixed now):** an arm *tracks the full model through rollout* when its mean matched-prefix is at least 0.75 of the anchor's and its same-position agreement is at least 0.9 of the anchor's. An arm shows *compounding* when its drop exceeds the anchor's drop by more than 10 percentage points. Fold only and `random` are controls expected to fail both.
+- **Limits:** 3 prompts of one text, 16 steps; matched-prefix lengths are integers with large variance; no claim beyond Phi-4-mini on this text.
