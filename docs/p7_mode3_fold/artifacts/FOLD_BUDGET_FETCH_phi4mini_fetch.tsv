@@ -1,0 +1,26 @@
+layer_plug_bytes	50331648
+gran	f	method	bytes	runs	ms_per_layer	GB_per_s
+channel	1.00	memcpy	50331648	4	4.3481	11.58
+channel	1.00	zerocopy	50331648	4	6.5606	7.67
+channel	0.50	memcpy	25165824	4639	7.3732	3.41
+channel	0.50	zerocopy	25165824	4639	3.6654	6.87
+channel	0.25	memcpy	12582912	3426	5.0318	2.50
+channel	0.25	zerocopy	12582912	3426	1.7875	7.04
+channel	0.10	memcpy	5044224	1627	2.3869	2.11
+channel	0.10	zerocopy	5044224	1627	0.7337	6.87
+channel	0.05	memcpy	2522112	845	1.2523	2.01
+channel	0.05	zerocopy	2522112	845	0.3540	7.12
+channel	0.01	memcpy	506880	175	0.2668	1.90
+channel	0.01	zerocopy	506880	175	0.0588	8.62
+block	1.00	memcpy	50331648	4	4.2883	11.74
+block	1.00	zerocopy	50331648	4	6.0874	8.27
+block	0.50	memcpy	25165824	70	2.2691	11.09
+block	0.50	zerocopy	25165824	70	3.8358	6.56
+block	0.25	memcpy	12582912	57	1.1664	10.79
+block	0.25	zerocopy	12582912	57	1.8517	6.80
+block	0.10	memcpy	5210112	28	0.4920	10.59
+block	0.10	zerocopy	5210112	28	0.5650	9.22
+block	0.05	memcpy	3047424	16	0.3053	9.98
+block	0.05	zerocopy	3047424	16	0.3261	9.35
+block	0.01	memcpy	983040	5	0.0926	10.62
+block	0.01	zerocopy	983040	5	0.1402	7.01
