@@ -69,6 +69,7 @@ static GlintLin g_gl[N_LAYERS][ARM0_N_LINEARS];
 static uint8_t *g_zero_plug = NULL;
 /* --glint-stream PINDIR: hole resident, plugs staged in pinned host RAM and brought in one layer ahead through the
  * 2-slot ring (glint_plug_streamer). One layer's plug is its four linears back to back (QKV, O, GATE_UP, DOWN). */
+static uint8_t *g_sf_plugk_h[N_LAYERS][ARM0_N_LINEARS], *g_sf_plugk_d[N_LAYERS][ARM0_N_LINEARS];
 static int g_stream = 0, g_res_layers = 0; /* ARM0_STREAM_RESIDENT_LAYERS=N: the first N layers keep their plug in VRAM, the rest stream */
 static size_t g_vram_base_free = 0;
 static GlintPlugStreamer *g_streamer = NULL;
@@ -86,6 +87,16 @@ static void glint_upload(const SafeTensors *a, const SafeTensors *b, int l, int 
     GlintLin &g = g_gl[l][j];
     CK(cudaMalloc(&g.hole, nb)); CK(cudaMemcpy(g.hole, eh->data, nb, cudaMemcpyHostToDevice));
     CK(cudaMalloc(&g.am, ab)); CK(cudaMemcpy(g.am, ea->data, ab, cudaMemcpyHostToDevice));
+    if (getenv("ARM0_SELFETCH")) { /* K-major copy of the plug in pinned, mapped host memory */
+        const int Nn = ARM0_LINEAR[j].n_out, Kk = ARM0_LINEAR[j].k_in; const uint8_t *src = (const uint8_t *)ep->data;
+        uint8_t *hp = NULL, *dp = NULL; CK(cudaHostAlloc((void **)&hp, (size_t)Kk * (Nn / 2), cudaHostAllocMapped | cudaHostAllocPortable));
+        CK(cudaHostGetDevicePointer((void **)&dp, hp, 0)); memset(hp, 0, (size_t)Kk * (Nn / 2));
+        for (int n = 0; n < Nn; n++) for (int c = 0; c < Kk; c++) {
+            size_t jj = (size_t)n * Kk + c; uint8_t nib = (src[jj >> 1] >> ((jj & 1) * 4)) & 15;
+            hp[(size_t)c * (Nn / 2) + (n >> 1)] |= (uint8_t)(nib << ((n & 1) * 4));
+        }
+        g_sf_plugk_h[l][j] = hp; g_sf_plugk_d[l][j] = dp;
+    }
     if (g_stream && l >= g_res_layers) { /* plug stays on the host; the ring brings it in */
         g_plug_src[l][j] = (const uint8_t *)ep->data; g_plug_off[l][j] = g_layer_bytes[l]; g_layer_bytes[l] += nb; g.plug = NULL;
     } else if (g_hole_only) { if (!g_zero_plug) { CK(cudaMalloc(&g_zero_plug, 8192ull * 3072 / 2 * 2)); CK(cudaMemset(g_zero_plug, 0, 8192ull * 3072)); } g.plug = g_zero_plug; }
@@ -475,6 +486,85 @@ static void gemv_check(const uint8_t *hole, const uint8_t *plug, const float *am
     g_gc_max_hr = fmax(g_gc_max_hr, mhr / rms); g_gc_sum_hr += mhr / rms; g_gc_n++;
 }
 
+/* ---- Selected-channel fetch decode (glint #86). For one token (M = 1) a linear is  y = parent_gemv(hole, x) + correction over the top-f
+ * input channels of x by |x|. The plug of a selected channel is read from a K-major copy (channel c holds its N plug nibbles contiguously)
+ * in pinned host memory, by the kernel itself over PCIe (zero-copy gather), not staged through VRAM. The hole stays row-major in VRAM.
+ * ARM0_SELFETCH=f (needs --glint-demand for a fast prefill; f in (0,1); 1 = full model, 0 = fold only), ARM0_SELFETCH_STATS=1 counts bytes,
+ * ARM0_SELFETCH_CHECK=1 compares each result with a double-precision reference built from the same selection. ---- */
+static double g_sf_frac = -1; static int g_sf_stats = 0, g_sf_check = 0;
+static int *g_sf_idx = NULL, *g_sf_cnt = NULL; static double g_sf_bytes = 0, g_sf_total = 0; static long g_sf_calls = 0;
+static double g_sfc_max = 0, g_sfc_sum = 0; static long g_sfc_n = 0; static double *g_sfc_yr = NULL; static float *g_sfc_y = NULL;
+__global__ void k_sf_select(const __nv_bfloat16 *x, int K, int nsel, int *idx, int *cnt_out) { /* one block of 1024 threads */
+    __shared__ int cnt; __shared__ unsigned lo, hi; __shared__ int kept;
+    if (threadIdx.x == 0) { lo = 0; hi = 0x7f800000u; kept = 0; }
+    __syncthreads();
+    for (int it = 0; it < 32; it++) {
+        if (lo >= hi) break;
+        unsigned mid = lo + (hi - lo + 1) / 2;
+        if (threadIdx.x == 0) cnt = 0;
+        __syncthreads();
+        int c = 0; for (int i = threadIdx.x; i < K; i += blockDim.x) c += __float_as_uint(fabsf(__bfloat162float(x[i]))) >= mid;
+        atomicAdd(&cnt, c); __syncthreads();
+        if (threadIdx.x == 0) { if (cnt >= nsel) lo = mid; else hi = mid - 1; }
+        __syncthreads();
+    }
+    for (int i = threadIdx.x; i < K; i += blockDim.x)
+        if (__float_as_uint(fabsf(__bfloat162float(x[i]))) >= lo) { int p = atomicAdd(&kept, 1); idx[p] = i; }
+    __syncthreads();
+    if (threadIdx.x == 0) *cnt_out = kept;
+}
+__global__ void k_sf_corr(const uint8_t *hole, const float *am, const uint8_t *plugk, const __nv_bfloat16 *x, const int *idx, const int *cnt_p,
+                          float *y, int N, int K) {
+    __shared__ float s_d[256];
+    for (int i = threadIdx.x; i < 256; i += blockDim.x) s_d[i] = c_cells[i >> 4][i & 15] - c_parent[i >> 4];
+    __syncthreads();
+    int n = blockIdx.x * blockDim.x + threadIdx.x; if (n >= N) return;
+    const int cnt = *cnt_p; float acc = 0.f; const size_t half = (size_t)N / 2;
+    for (int i = 0; i < cnt; i++) {
+        int c = idx[i]; size_t j = (size_t)n * K + c;
+        uint8_t hb = hole[j >> 1], pb = plugk[(size_t)c * half + (n >> 1)];
+        int h = (j & 1) ? (hb >> 4) : (hb & 15), p = (n & 1) ? (pb >> 4) : (pb & 15);
+        acc += (s_d[(h << 4) | p] * am[j >> 6]) * __bfloat162float(x[c]);
+    }
+    y[n] += acc;
+}
+__global__ void k_sf_ref(const uint8_t *hole, const uint8_t *plug, const float *am, const __nv_bfloat16 *x, const int *idx, const int *cnt_p, double *y, int N, int K) {
+    int n = blockIdx.x * blockDim.x + threadIdx.x; if (n >= N) return;
+    double acc = 0; const int cnt = *cnt_p;
+    for (int k = 0; k < K; k++) {
+        size_t j = (size_t)n * K + k; uint8_t hb = hole[j >> 1]; int h = (j & 1) ? (hb >> 4) : (hb & 15);
+        acc += (double)(c_parent[h] * am[j >> 6]) * (double)__bfloat162float(x[k]);
+    }
+    for (int i = 0; i < cnt; i++) {
+        int c = idx[i]; size_t j = (size_t)n * K + c; uint8_t hb = hole[j >> 1], pb = plug[j >> 1];
+        int h = (j & 1) ? (hb >> 4) : (hb & 15), p = (j & 1) ? (pb >> 4) : (pb & 15);
+        acc += (double)((c_cells[h][p] - c_parent[h]) * am[j >> 6]) * (double)__bfloat162float(x[c]);
+    }
+    y[n] = acc;
+}
+static void selfetch_linear(int layer, int which, const GlintLin &g, const __nv_bfloat16 *x, float *y) {
+    const int N = ARM0_LINEAR[which].n_out, K = ARM0_LINEAR[which].k_in;
+    if (!g_sf_idx) { CK(cudaMalloc(&g_sf_idx, 8192 * 4)); CK(cudaMalloc(&g_sf_cnt, 4)); }
+    int save = g_gemv_parent; g_gemv_parent = 1; gemv_launch(g.hole, g.plug, g.am, x, y, N, K); g_gemv_parent = save; /* parent value for every weight */
+    g_sf_total += (double)K * (N / 2); g_sf_calls++;
+    if (g_sf_frac <= 0.0) return;
+    int nsel = (int)ceil(g_sf_frac * K - 1e-6); if (nsel < 1) nsel = 1; if (nsel > K) nsel = K;
+    k_sf_select<<<1, 1024>>>(x, K, nsel, g_sf_idx, g_sf_cnt);
+    k_sf_corr<<<(N + 127) / 128, 128>>>(g.hole, g.am, g_sf_plugk_d[layer][which], x, g_sf_idx, g_sf_cnt, y, N, K);
+    CK(cudaGetLastError());
+    if (g_sf_stats || g_sf_check) {
+        int cnt = 0; CK(cudaMemcpy(&cnt, g_sf_cnt, 4, cudaMemcpyDeviceToHost)); g_sf_bytes += (double)cnt * (N / 2);
+        if (g_sf_check) {
+            if (!g_sfc_yr) { CK(cudaMalloc(&g_sfc_yr, 16384 * 8)); g_sfc_y = (float *)malloc(16384 * 4); }
+            k_sf_ref<<<(N + 127) / 128, 128>>>(g.hole, g.plug, g.am, x, g_sf_idx, g_sf_cnt, g_sfc_yr, N, K);
+            std::vector<double> r(N); std::vector<float> a(N);
+            CK(cudaMemcpy(r.data(), g_sfc_yr, N * 8, cudaMemcpyDeviceToHost)); CK(cudaMemcpy(a.data(), y, N * 4, cudaMemcpyDeviceToHost));
+            double ss = 0, md = 0; for (int i = 0; i < N; i++) { ss += r[i] * r[i]; md = fmax(md, fabs((double)a[i] - r[i])); }
+            double rms = sqrt(ss / N); if (rms > 0) { g_sfc_max = fmax(g_sfc_max, md / rms); g_sfc_sum += md / rms; g_sfc_n++; }
+        }
+    }
+}
+
 struct CublasLinears {
     cublasHandle_t cublas;
     __nv_bfloat16 *w[N_LAYERS][ARM0_N_LINEARS];
@@ -485,6 +575,8 @@ static void cublas_linear(void *ctx, int layer, Arm0Linear which, const __nv_bfl
     act_capture(layer, which, x, m);
     if (g_glint) {
         const GlintLin &g = g_gl[layer][which];
+        if (g_sf_frac >= 0 && g_sf_frac < 1.0 && m == 1) { selfetch_linear(layer, which, g, x, y); return; }
+        if (g_gemv && g_sf_frac >= 1.0 && m == 1) { gemv_launch(g.hole, g.plug, g.am, x, y, ARM0_LINEAR[which].n_out, ARM0_LINEAR[which].k_in); return; }
         if (g_demand) { demand_linear(lin->cublas, layer, which, x, y, m); return; }
         if (g_stream && layer >= g_res_layers) {
             if (which == ARM0_QKV && glint_plug_streamer_acquire(g_streamer, layer - g_res_layers, &g_cur_dev_plug) != 0)
@@ -577,6 +669,7 @@ int main(int argc, char** argv) {
         if (safetensors_open(&gs1, a) != 0 || safetensors_open(&gs2, b) != 0) setup_fail("cannot open glint pin %s", glint_dir);
         for (int l = 0; l < N_LAYERS; l++) for (int j = 0; j < ARM0_N_LINEARS; j++) glint_upload(&gs1, &gs2, l, j);
         if (g_demand) demand_init();
+        if (getenv("ARM0_SELFETCH")) { g_sf_frac = atof(getenv("ARM0_SELFETCH")); g_sf_stats = getenv("ARM0_SELFETCH_STATS") != NULL; g_sf_check = getenv("ARM0_SELFETCH_CHECK") != NULL; g_gemv = 1; gemv_init(); printf("Selected-channel fetch decode: f=%.4f (K-major plug in pinned host memory, zero-copy)\n", g_sf_frac); }
         if (getenv("ARM0_GEMV") && atoi(getenv("ARM0_GEMV")) == 1) { g_gemv = 1; gemv_init(); g_gemv_check = getenv("ARM0_GEMV_CHECK") && atoi(getenv("ARM0_GEMV_CHECK")) == 1; printf("GLINT decode GEMV enabled for M = 1 (parent_only=%d)\n", g_gemv_parent); }
         if (g_stream && g_res_layers < N_LAYERS) {
             CK(cudaStreamCreateWithFlags(&g_copy_stream, cudaStreamNonBlocking));
@@ -715,6 +808,8 @@ int main(int argc, char** argv) {
         }
         printf("DECODE_TIMING steps=%d mean_ms_per_token=%.3f mean_ms_per_layer=%.4f tokens_per_s=%.2f\n", nt, tot_ms / nt, tot_ms / nt / N_LAYERS, 1000.0 * nt / tot_ms);
         if (g_gemv_check) printf("GEMV_CHECK linears=%ld | max/mean error relative to RMS of the double reference: gemv %.3e/%.3e  htile %.3e/%.3e  gemv-vs-htile %.3e/%.3e\n", g_gc_n, g_gc_max_gr, g_gc_n ? g_gc_sum_gr / g_gc_n : 0.0, g_gc_max_hr, g_gc_n ? g_gc_sum_hr / g_gc_n : 0.0, g_gc_max_gh, g_gc_n ? g_gc_sum_gh / g_gc_n : 0.0);
+        if (g_sf_frac >= 0 && g_sf_frac < 1.0) printf("SELFETCH f=%.4f bytes_per_token_MB=%.2f frac_of_plug=%.4f%s\n", g_sf_frac, g_sf_bytes / (g_sf_calls / (double)(N_LAYERS * ARM0_N_LINEARS)) / 1e6, g_sf_total > 0 ? g_sf_bytes / g_sf_total : 0.0, g_sf_check ? "" : " (only meaningful with ARM0_SELFETCH_STATS=1)");
+        if (g_sf_check && g_sfc_n) printf("SELFETCH_CHECK linears=%ld max_err_to_rms=%.3e mean_err_to_rms=%.3e (vs double reference with the same selection)\n", g_sfc_n, g_sfc_max, g_sfc_sum / g_sfc_n);
         printf("DECODE_GEN:"); for (int g : gen) printf(" %d", g); printf("\n");
         const char *dro = getenv("ARM0_DECODE_OUT"); if (dro) { FILE *fo = fopen(dro, "w"); for (size_t i = 0; i < gen.size(); i++) fprintf(fo, "%s%d", i ? " " : "", gen[i]); fprintf(fo, "\n"); fclose(fo); }
         fflush(stdout);
