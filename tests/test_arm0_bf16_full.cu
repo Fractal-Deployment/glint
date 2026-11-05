@@ -295,6 +295,111 @@ static void demand_report() {
     }
 }
 
+/* ---- Decode path (glint #84): one token per step with a per-layer KV cache. Same arithmetic as the prefill kernels. ---- */
+__global__ void k_dec_rope(const float *qkv, float *q, float *kc, float *vc, int pos) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= (NUM_Q_HEADS + 2 * NUM_KV_HEADS) * HEAD_DIM) return;
+    int d = idx % HEAD_DIM, head = idx / HEAD_DIM;
+    const float *qkv_row = qkv;
+    int i = d % (ROTARY_DIM / 2);
+    float inv_freq = 1.0f / powf(ROPE_THETA, (2.0f * (float)i) / (float)ROTARY_DIM);
+    float angle = (float)pos * inv_freq;
+    float cos_v = bf16r(cosf(angle) * ATTENTION_SCALING);
+    float sin_v = bf16r(sinf(angle) * ATTENTION_SCALING);
+    if (head < NUM_Q_HEADS + NUM_KV_HEADS) {
+        int in_base = head * HEAD_DIM; /* q heads then k heads are contiguous in the fused row */
+        float val;
+        if (d < ROTARY_DIM / 2) {
+            float x0 = bf16r(qkv_row[in_base + d]), x1 = bf16r(qkv_row[in_base + d + ROTARY_DIM / 2]);
+            val = bf16r(bf16r(x0 * cos_v) - bf16r(x1 * sin_v));
+        } else if (d < ROTARY_DIM) {
+            float x0 = bf16r(qkv_row[in_base + d - ROTARY_DIM / 2]), x1 = bf16r(qkv_row[in_base + d]);
+            val = bf16r(bf16r(x1 * cos_v) + bf16r(x0 * sin_v));
+        } else {
+            val = bf16r(qkv_row[in_base + d]);
+        }
+        if (head < NUM_Q_HEADS) q[head * HEAD_DIM + d] = val;
+        else kc[(size_t)pos * NUM_KV_HEADS * HEAD_DIM + (head - NUM_Q_HEADS) * HEAD_DIM + d] = val;
+    } else {
+        int h = head - (NUM_Q_HEADS + NUM_KV_HEADS);
+        int in_base = (NUM_Q_HEADS + NUM_KV_HEADS) * HEAD_DIM + h * HEAD_DIM;
+        vc[(size_t)pos * NUM_KV_HEADS * HEAD_DIM + h * HEAD_DIM + d] = bf16r(qkv_row[in_base + d]);
+    }
+}
+__global__ void k_dec_attn(const float *q, const float *k, const float *v, float *out, __nv_bfloat16 *out_bf16, int npos) {
+    int hq = blockIdx.x; if (hq >= NUM_Q_HEADS) return;
+    int hkv = hq / 3, d = threadIdx.x;
+    float scale = 1.0f / sqrtf((float)HEAD_DIM);
+    float q_val = q[hq * HEAD_DIM + d] * scale;
+    float m_val = -1e30f, d_val = 0.0f, acc = 0.0f;
+    __shared__ float s_red[128];
+    for (int tk = 0; tk < npos; tk++) {
+        const float *k_row = k + ((size_t)tk * NUM_KV_HEADS + hkv) * HEAD_DIM;
+        float prod = q_val * k_row[d];
+        s_red[d] = prod; __syncthreads();
+        if (d < 64) s_red[d] += s_red[d + 64];
+        __syncthreads();
+        if (d < 32) {
+            float b = s_red[d] + s_red[d + 32];
+            for (int offset = 16; offset > 0; offset /= 2) b += __shfl_down_sync(0xffffffff, b, offset);
+            s_red[d] = b;
+        }
+        __syncthreads();
+        float score = s_red[0];
+        float m_new = fmaxf(m_val, score), alpha = expf(m_val - m_new), beta = expf(score - m_new);
+        d_val = d_val * alpha + beta; m_val = m_new;
+        const float *v_row = v + ((size_t)tk * NUM_KV_HEADS + hkv) * HEAD_DIM;
+        acc = acc * alpha + bf16r(beta) * v_row[d];
+        __syncthreads();
+    }
+    float final_out = (d_val > 0.0f) ? (acc / d_val) : 0.0f;
+    out[hq * HEAD_DIM + d] = final_out;
+    if (out_bf16) out_bf16[hq * HEAD_DIM + d] = __float2bfloat16(final_out);
+}
+struct DecBufs {
+    float *x, *h, *qkv, *q, *attn, *proj, *gu, *act, *down, *logits, *loss; __nv_bfloat16 *hb, *attnb, *actb, *xfb;
+    float *kc[N_LAYERS], *vc[N_LAYERS]; int32_t *tgt, *top1;
+};
+static void dec_alloc(DecBufs &b) {
+    CK(cudaMalloc(&b.x, HIDDEN_DIM * 4)); CK(cudaMalloc(&b.h, HIDDEN_DIM * 4)); CK(cudaMalloc(&b.qkv, 5120 * 4));
+    CK(cudaMalloc(&b.q, NUM_Q_HEADS * HEAD_DIM * 4)); CK(cudaMalloc(&b.attn, NUM_Q_HEADS * HEAD_DIM * 4));
+    CK(cudaMalloc(&b.proj, HIDDEN_DIM * 4)); CK(cudaMalloc(&b.gu, 2 * INTERMEDIATE_DIM * 4)); CK(cudaMalloc(&b.act, INTERMEDIATE_DIM * 4));
+    CK(cudaMalloc(&b.down, HIDDEN_DIM * 4)); CK(cudaMalloc(&b.logits, (size_t)VOCAB_SIZE * 4)); CK(cudaMalloc(&b.loss, 4));
+    CK(cudaMalloc(&b.hb, HIDDEN_DIM * 2)); CK(cudaMalloc(&b.attnb, NUM_Q_HEADS * HEAD_DIM * 2));
+    CK(cudaMalloc(&b.actb, INTERMEDIATE_DIM * 2)); CK(cudaMalloc(&b.xfb, HIDDEN_DIM * 2));
+    CK(cudaMalloc(&b.tgt, 4)); CK(cudaMalloc(&b.top1, 4));
+    for (int l = 0; l < N_LAYERS; l++) { CK(cudaMalloc(&b.kc[l], 2048ull * NUM_KV_HEADS * HEAD_DIM * 4)); CK(cudaMalloc(&b.vc[l], 2048ull * NUM_KV_HEADS * HEAD_DIM * 4)); }
+}
+/* One token at position pos (the KV cache holds positions 0..pos-1). Returns the argmax and the CE loss against `target`. */
+static void dec_step(const Arm0Model *model, DecBufs &b, int token, int pos, int target, Arm0LinearFn linear, void *ctx,
+                     cublasHandle_t cb, int32_t *top1, float *loss) {
+    if (g_stream && g_streamer && glint_plug_streamer_start(g_streamer) != 0) setup_fail("streamer start failed (decode step %d)", pos); /* each token is one pass over the layers */
+    float hx[HIDDEN_DIM];
+    for (int d = 0; d < HIDDEN_DIM; d++) hx[d] = __bfloat162float(model->h_embed[(size_t)token * HIDDEN_DIM + d]);
+    CK(cudaMemcpy(b.x, hx, sizeof(hx), cudaMemcpyHostToDevice));
+    for (int l = 0; l < N_LAYERS; l++) {
+        rms_norm_kernel<<<1, 128>>>(b.x, model->d_input_norm[l], b.h, b.hb, 1, HIDDEN_DIM, RMS_EPS);
+        linear(ctx, l, ARM0_QKV, b.hb, b.qkv, 1);
+        k_dec_rope<<<((NUM_Q_HEADS + 2 * NUM_KV_HEADS) * HEAD_DIM + 255) / 256, 256>>>(b.qkv, b.q, b.kc[l], b.vc[l], pos);
+        k_dec_attn<<<NUM_Q_HEADS, 128>>>(b.q, b.kc[l], b.vc[l], b.attn, b.attnb, pos + 1);
+        linear(ctx, l, ARM0_O, b.attnb, b.proj, 1);
+        residual_add_kernel<<<(HIDDEN_DIM + 255) / 256, 256>>>(b.x, b.proj, HIDDEN_DIM);
+        rms_norm_kernel<<<1, 128>>>(b.x, model->d_post_norm[l], b.h, b.hb, 1, HIDDEN_DIM, RMS_EPS);
+        linear(ctx, l, ARM0_GATE_UP, b.hb, b.gu, 1);
+        swiglu_kernel<<<(INTERMEDIATE_DIM + 255) / 256, 256>>>(b.gu, b.act, b.actb, 1);
+        linear(ctx, l, ARM0_DOWN, b.actb, b.down, 1);
+        residual_add_kernel<<<(HIDDEN_DIM + 255) / 256, 256>>>(b.x, b.down, HIDDEN_DIM);
+    }
+    rms_norm_kernel<<<1, 128>>>(b.x, model->d_final_norm, b.h, b.xfb, 1, HIDDEN_DIM, RMS_EPS);
+    float one = 1.0f, zero = 0.0f;
+    CKB(cublasGemmEx(cb, CUBLAS_OP_T, CUBLAS_OP_N, VOCAB_SIZE, 1, HIDDEN_DIM, &one, model->d_embed, CUDA_R_16BF, HIDDEN_DIM,
+                     b.xfb, CUDA_R_16BF, HIDDEN_DIM, &zero, b.logits, CUDA_R_32F, VOCAB_SIZE, CUDA_R_32F, CUBLAS_GEMM_DEFAULT));
+    int32_t tg = target; CK(cudaMemcpy(b.tgt, &tg, 4, cudaMemcpyHostToDevice));
+    compute_ce_and_argmax_kernel<<<1, 256>>>(b.logits, b.tgt, b.loss, b.top1, 1, VOCAB_SIZE);
+    CK(cudaGetLastError());
+    CK(cudaMemcpy(top1, b.top1, 4, cudaMemcpyDeviceToHost)); CK(cudaMemcpy(loss, b.loss, 4, cudaMemcpyDeviceToHost));
+}
+
 struct CublasLinears {
     cublasHandle_t cublas;
     __nv_bfloat16 *w[N_LAYERS][ARM0_N_LINEARS];
@@ -498,6 +603,38 @@ int main(int argc, char** argv) {
         fwrite(h_losses, sizeof(float), 2047, fp);
         fwrite(h_top1, sizeof(int32_t), 2047, fp);
         fclose(fp);
+    }
+
+    /* ARM0_DECODE=PL,S: decode path check and timing (glint #84). (1) teacher-forced: step the true tokens 0..PL+S-1 through the KV-cache
+     * path and compare top-1 and CE loss with the prefill results of this same run; (2) free-running: greedy-generate S tokens after the
+     * PL-token prompt, timing each step; the generated ids go to ARM0_DECODE_OUT. */
+    if (getenv("ARM0_DECODE")) {
+        int PL = 64, S = 16; sscanf(getenv("ARM0_DECODE"), "%d,%d", &PL, &S);
+        DecBufs db; dec_alloc(db);
+        const int N = PL + S;
+        int t1_eq = 0, loss_bit_eq = 0; double max_dl = 0, sum_dl = 0; std::vector<int> dt1(N);
+        for (int pos = 0; pos < N; pos++) {
+            int32_t t1; float ls;
+            dec_step(&model, db, ev.tokens[pos], pos, ev.tokens[pos + 1], cublas_linear, &lin, lin.cublas, &t1, &ls);
+            dt1[pos] = t1;
+            t1_eq += (t1 == h_top1[pos]);
+            double dl = fabs((double)ls - (double)h_losses[pos]); sum_dl += dl; if (dl > max_dl) max_dl = dl;
+            loss_bit_eq += (memcmp(&ls, &h_losses[pos], 4) == 0);
+        }
+        printf("DECODE_CHECK positions=%d top1_equal=%d loss_bitwise_equal=%d max_abs_dCE=%.3e mean_abs_dCE=%.3e\n", N, t1_eq, loss_bit_eq, max_dl, sum_dl / N);
+        std::vector<int> gen; gen.push_back(dt1[PL - 1]);
+        cudaEvent_t e0, e1; CK(cudaEventCreate(&e0)); CK(cudaEventCreate(&e1)); double tot_ms = 0; int nt = 0;
+        for (int st = 1; st < S; st++) {
+            int32_t t1; float ls; float ms = 0;
+            CK(cudaDeviceSynchronize()); CK(cudaEventRecord(e0));
+            dec_step(&model, db, gen[st - 1], PL + st - 1, 0, cublas_linear, &lin, lin.cublas, &t1, &ls);
+            CK(cudaEventRecord(e1)); CK(cudaEventSynchronize(e1)); CK(cudaEventElapsedTime(&ms, e0, e1));
+            gen.push_back(t1); tot_ms += ms; nt++;
+        }
+        printf("DECODE_TIMING steps=%d mean_ms_per_token=%.3f mean_ms_per_layer=%.4f tokens_per_s=%.2f\n", nt, tot_ms / nt, tot_ms / nt / N_LAYERS, 1000.0 * nt / tot_ms);
+        printf("DECODE_GEN:"); for (int g : gen) printf(" %d", g); printf("\n");
+        const char *dro = getenv("ARM0_DECODE_OUT"); if (dro) { FILE *fo = fopen(dro, "w"); for (size_t i = 0; i < gen.size(); i++) fprintf(fo, "%s%d", i ? " " : "", gen[i]); fprintf(fo, "\n"); fclose(fo); }
+        fflush(stdout);
     }
 
     /* ARM0_ROLLOUT=P,S,PL: greedy generation by repeated full forwards on a padded 2048-token buffer. Attention is causal, so
