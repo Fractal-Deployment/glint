@@ -1,5 +1,5 @@
 {
-  "logits_file": "/mnt/spill/compile_scratch/p7-resolution/ref/hf_logits_2048.bf16",
+  "logits_file": "/home/workspace/lakes/p7_glint/int4_run_20261104/ref/hf_logits_2048.bf16",
   "shape": [
     2047,
     200064
