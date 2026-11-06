@@ -41,3 +41,26 @@ One calibration text of 16.7k tokens, one run, 2047 evaluation tokens, one seed;
 # Amendment 11b (written after the results above were known; the rule below is fixed BEFORE its runs)
 The result above shows the plug saturating in the wrong cell. Test of the cheapest candidate fix: widen each parent row of the 16x16 child table by a factor F around the parent value (clipped to [-1, 1]) so a plug can reach past the cell the calibrated hole picked, then re-choose every plug as the nearest wide-row child of the original weight (`scripts/glint_wide_plug.py`; `ARM0_CELLS_FILE` loads the table in the harness). Holes and absmax are untouched, so fold-only is unchanged by construction (it uses the parent value only); only the full hole + plug arm is measured. Two factors, both reported: F = 1.5 and F = 2.0 (no best-of selection). The table is global, so the embedding plugs are re-encoded too.
 **Rule:** the fix works if full hole + plug on the widened pin has PPL <= 1.01 x the existing pin's 5.480 (<= 5.535) with F = 1.5 or F = 2.0; it partly works if PPL is below the 5.742 of the unwidened calibrated pin but above 5.535; it fails otherwise. The existing (nearest-cell) pin evaluated with the same widened table is the control for the resolution cost of widening alone.
+
+---
+# RESULTS of Amendment 11b (2026-11-06)
+**Correction first.** The first widened-table evaluations ran through `--glint` (the resident H-TILE path), which decodes with the built-in table in `cuda/glint_htile.cu`, not with `ARM0_CELLS_FILE`; those numbers (PPL 5.675 / 5.604, controls 5.570 / 5.612) are **invalid** and are not used. The valid runs use `--glint-demand` with `ARM0_DEMAND_RULE=act ARM0_DEMAND_F=1`, whose dequantization reads the custom table (the log prints "custom child table"). On this path the existing pin scores 5.4885 (the earlier 5.480 is the `--glint` path; the rule's bar is recomputed on the demand path: 1.01 x 5.4885 = 5.543).
+
+| pin, table | PPL | top-1 | mean KL vs BF16 |
+|---|---|---|---|
+| existing (nearest-cell) pin, built-in table | 5.4885 | 98.19% | 9.5e-4 |
+| existing pin re-encoded, F = 1.5 (control) | 5.4855 | 97.85% | 1.6e-3 |
+| existing pin re-encoded, F = 2.0 (control) | 5.4938 | 97.61% | 2.5e-3 |
+| calibrated pin, built-in table | 5.7468 | 93.21% | 5.4e-2 |
+| calibrated pin, F = 1.5 | 5.7155 | 93.94% | 4.8e-2 |
+| calibrated pin, F = 2.0 | 5.7172 | 93.60% | 4.6e-2 |
+
+- *Measured:* widening costs little by itself (controls: PPL +0.0 to +0.005, KL 1.6e-3 to 2.5e-3), so a wide table is cheap for a pin whose holes are nearest cells.
+- **Verdict under the rule:** the calibrated pin's full arm is 5.716-5.717 against the bar of 5.543: **not met**. It is below the unwidened 5.747, so the literal outcome is "partly works", but the improvement is 0.03 PPL (0.5%) and the full arm stays far from the existing pin (KL 4.6e-2 against 9.5e-4). Practically: the wide table does **not** fix the composition problem.
+- *Measured (diagnostic on one layer, `scripts/glint_gptq_diag.py`):* 23.8% of the calibrated holes are not the weight's nearest cell; hole-only weight RMSE rises from 0.0358 (nearest) to 0.0502 while output KL falls, as GPTQ intends. With F = 2.0 the plugs bring the weight RMSE to 0.0086 (existing pin 0.0025).
+- *Inference, not tested:* the full arm on the calibrated pin is worse than the calibrated hole alone (KL 4.6e-2 against 3.0e-2) because the plug removes part of the weight error that GPTQ had arranged to cancel in later columns: a partial correction of the first columns leaves the compensation in the later ones unmatched. If so, a calibrated hole and a fetched plug are in tension for any plug that does not itself go through the same error-feedback rounding. A fix would need the plug (or the hole + plug pair) chosen by GPTQ on the fine 256-level grid, which gives the full arm back but leaves the hole near its nearest cell (little base gain), or a second stored base. Which trade-off suits the tiered design is the question of Amendment 11c.
+
+---
+# Amendment 11c (fixed before its runs): does the calibrated hole help the tiered design?
+The tiered arms use the hole alone for most channels and hole + plug for the fetched ones, so what matters is the mixture, not either end. Test: the rollout study of `TIERED_PLUG_phi4mini.md` (12 prompts x 32 steps, reference = the existing pin's full model decode, `decode_rollout_20261104/full.txt`) with the **calibrated pin (built-in table)** for T-A (10% + 30% 3-bit), F3 (10% + 10% 3-bit, 282 MB) and 4-bit `act` 25% (403 MB), against the existing-pin results (T-A 91.7%, F3 58.9%, act 25% 72.7%). Note the reference is the existing pin's own full model, so a calibrated pin that is closer to BF16 but different from that reference is penalized; the BF16-anchor agreement for the reference is 91.7%, so differences under about 8 points are noise.
+**Rule:** helps the tier if all three calibrated arms score at least 5 points above their existing-pin counterparts; hurts if all three score at least 5 points below; otherwise no clear change. One run per arm.
