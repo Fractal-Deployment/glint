@@ -64,3 +64,31 @@ The result above shows the plug saturating in the wrong cell. Test of the cheape
 # Amendment 11c (fixed before its runs): does the calibrated hole help the tiered design?
 The tiered arms use the hole alone for most channels and hole + plug for the fetched ones, so what matters is the mixture, not either end. Test: the rollout study of `TIERED_PLUG_phi4mini.md` (12 prompts x 32 steps, reference = the existing pin's full model decode, `decode_rollout_20261104/full.txt`) with the **calibrated pin (built-in table)** for T-A (10% + 30% 3-bit), F3 (10% + 10% 3-bit, 282 MB) and 4-bit `act` 25% (403 MB), against the existing-pin results (T-A 91.7%, F3 58.9%, act 25% 72.7%). Note the reference is the existing pin's own full model, so a calibrated pin that is closer to BF16 but different from that reference is penalized; the BF16-anchor agreement for the reference is 91.7%, so differences under about 8 points are noise.
 **Rule:** helps the tier if all three calibrated arms score at least 5 points above their existing-pin counterparts; hurts if all three score at least 5 points below; otherwise no clear change. One run per arm.
+
+---
+# RESULTS of Amendment 11c (2026-11-06)
+Rollout study (12 prompts x 32 steps), reference = the existing pin's full-model decode (`decode_rollout_20261104/full.txt`), as pre-registered; one run per arm; scorer `scripts/rollout_score.sh`.
+
+| arm | existing pin (agreement) | calibrated pin (agreement) | change |
+|---|---|---|---|
+| T-A (10% + 30% 3-bit) | 91.7% | 52.9% | -38.8 |
+| F3 (10% + 10% 3-bit) | 58.9% | 53.1% | -5.8 |
+| 4-bit `act` 25% | 72.7% | 59.1% | -13.6 |
+
+**Verdict under the rule: hurts** (all three at least 5 points below their existing-pin counterparts). The reference favours the existing pin (it is that pin's own full model), so the following comparisons, which were NOT pre-registered and are post hoc, use the better ground truth, the **BF16 anchor decode** (`decode_rollout_20261104/anchor.txt`; the noise floor is the existing full model scoring 91.7% against it).
+
+| arm | existing pin vs BF16 anchor | calibrated pin vs BF16 anchor |
+|---|---|---|
+| base only (no plug) | 21.4% (prefix 3.7) | **46.1%** (prefix 9.6) |
+| 4-bit `act` 25% | 68.8% | 54.4% |
+| F3 | 54.2% | 47.7% |
+| T-A | **83.6%** (prefix 24.1) | 47.9% (prefix 10.2) |
+| full (hole + plug, all channels) | 91.7% | 56.0% |
+
+- *Measured (the positive):* the calibrated base alone more than doubles generation agreement with BF16 at zero plug bytes: **46.1% against 21.4%** (KL 3.0e-2 against 7.9e-2). It is the best zero-byte arm measured.
+- *Measured (the problem):* adding the plug does not add to it. On the calibrated pin every plug arm stays at 47-56%, within a few points of the base alone, and even the full arm drops to 56.0% against the existing pin's 91.7%. The existing pin with a plug (T-A 83.6%) is far better than any calibrated arm.
+- Consequence: **a calibrated base and the in-cell plug do not compose, and the combination is worse than the data-free pin plus plug.** Quality-first ruling: keep the existing pin as the tiered design's base. The calibrated base is a result to build on, not a replacement yet.
+- *Inference, untested:* GPTQ spreads each weight's rounding error over the later columns, so restoring some channels to their original values (what a plug does) un-cancels that compensation in the channels left at the hole. A plug (or a hole + plug pair) produced by the same error-feedback rounding, a residual plug stored relative to the calibrated hole with its own scale, or calibrating the base with the fetched fraction known are the candidates; none was run.
+
+## What this does not show
+One text, one calibration text, 12 x 32 rollouts, one run per arm; the BF16 comparisons are post hoc. The calibration set was 16.7k tokens (30 x 512), damp 0.01, one seed. Not reviewed by the Test Designer.
