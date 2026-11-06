@@ -250,6 +250,11 @@ static void cells_bits_fixed(float out[16][16], int b) {
 }
 static void cells_for_bits(float out[16][16]) {
     memcpy(out, GLINT_CELLS, sizeof(float) * 256);
+    if (const char *cf = getenv("ARM0_CELLS_FILE")) { /* spec Amendment 11b: a custom 16x16 child table (256 floats, text) replaces the built-in one */
+        FILE *f = fopen(cf, "r"); if (!f) setup_fail("cannot open ARM0_CELLS_FILE");
+        for (int i = 0; i < 256; i++) if (fscanf(f, "%f", &out[i >> 4][i & 15]) != 1) setup_fail("ARM0_CELLS_FILE needs 256 floats");
+        fclose(f); printf("ARM0_CELLS_FILE=%s: custom child table\n", cf);
+    }
     const char *e = getenv("GLINT_PLUG_BITS"); int b = e ? atoi(e) : 4; if (b >= 4 || b < 1) return;
     const int bin = 1 << (4 - b);
     for (int h = 0; h < 16; h++) for (int s0 = 0; s0 < 16; s0 += bin) {

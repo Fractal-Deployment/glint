@@ -36,3 +36,8 @@ Build: `scripts/glint_gptq_hole.py`, 30 x 512 calibration tokens (16,711 tokens 
 
 ## What this does not show
 One calibration text of 16.7k tokens, one run, 2047 evaluation tokens, one seed; the calibration and evaluation texts are different (workspace docs against the journal) but both are English technical prose. No rollout, tracking or speed measurement was made on the calibrated pin yet. Not reviewed by the Test Designer.
+
+---
+# Amendment 11b (written after the results above were known; the rule below is fixed BEFORE its runs)
+The result above shows the plug saturating in the wrong cell. Test of the cheapest candidate fix: widen each parent row of the 16x16 child table by a factor F around the parent value (clipped to [-1, 1]) so a plug can reach past the cell the calibrated hole picked, then re-choose every plug as the nearest wide-row child of the original weight (`scripts/glint_wide_plug.py`; `ARM0_CELLS_FILE` loads the table in the harness). Holes and absmax are untouched, so fold-only is unchanged by construction (it uses the parent value only); only the full hole + plug arm is measured. Two factors, both reported: F = 1.5 and F = 2.0 (no best-of selection). The table is global, so the embedding plugs are re-encoded too.
+**Rule:** the fix works if full hole + plug on the widened pin has PPL <= 1.01 x the existing pin's 5.480 (<= 5.535) with F = 1.5 or F = 2.0; it partly works if PPL is below the 5.742 of the unwidened calibrated pin but above 5.535; it fails otherwise. The existing (nearest-cell) pin evaluated with the same widened table is the control for the resolution cost of widening alone.
