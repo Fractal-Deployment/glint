@@ -11,19 +11,22 @@ M="${MODEL_DIR:-/opt/models/.hf_cache/hub/models--microsoft--Phi-4-mini-instruct
 A="$R/docs/p7_mode3_fold/artifacts"
 FL="${GPU_LEASE:-/home/workspace/fractal-deployment/training_orchestrator/scripts/with_gpu_flock.sh}"
 mkdir -p "$OUT"
-# Idle guard: 6 samples over ~6 s; refuse if any sample shows >10% utilization or another compute process.
-busy=0
-for _ in 1 2 3 4 5 6; do
+# Idle guard. This is a desktop machine, so ambient graphics load (Xorg, gnome-shell, browsers) of a few to ~60% on
+# short spikes is normal and is recorded, not refused. Refuse if (a) any other compute process holds the GPU,
+# (b) a qemu VM is running (VM GPU use is invisible to nvidia-smi), or (c) mean utilization over 10 s exceeds 40%.
+sum=0; n=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
   u=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits | head -1)
-  [ "${u:-0}" -gt 10 ] && busy=1
-  sleep 1
+  sum=$((sum + ${u:-0})); n=$((n + 1)); sleep 1
 done
+mean=$((sum / n))
 apps=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader | wc -l)
-if [ "$busy" -ne 0 ] || [ "$apps" -gt 0 ]; then
-  echo "REFUSING TO RUN: GPU not idle (utilization sample >10% or $apps compute process(es)). Nothing was run." | tee "$OUT/REFUSED.txt"
+vms=$(pgrep -af qemu-system | wc -l)
+if [ "$apps" -gt 0 ] || [ "$vms" -gt 0 ] || [ "$mean" -gt 40 ]; then
+  echo "REFUSING TO RUN: compute_processes=$apps qemu_vms=$vms mean_util_10s=${mean}%. Nothing was run." | tee "$OUT/REFUSED.txt"
   exit 4
 fi
-{ echo "# retest $(date -Is) host $(hostname) driver $(nvidia-smi --query-gpu=driver_version --format=csv,noheader)"; echo "# running VMs: $(pgrep -af qemu-system | cut -c1-80 | tr '\n' ';')"; } >> "$OUT/summary.txt"
+{ echo "# retest $(date -Is) host $(hostname) driver $(nvidia-smi --query-gpu=driver_version --format=csv,noheader)"; echo "# idle guard passed: compute_processes=$apps qemu_vms=$vms mean_util_10s=${mean}% (ambient desktop graphics included)"; } >> "$OUT/summary.txt"
 lxc exec 40-Runtime-Deps -- bash -c "export MODULAR_HOME=/root/.pixi/envs/modular/share/max; export PATH=/root/.pixi/envs/modular/bin:\$PATH; cd $R && mojo build -I mojo -o /tmp/p7_select_retest mojo/p7_glint_select_decode.mojo" > "$OUT/build.log" 2>&1 || { echo "build failed" | tee -a "$OUT/summary.txt"; exit 3; }
 for c in $CFGS; do
   pct="${c%%:*}"; fx=0; [ "$c" != "$pct" ] && fx="${c##*:}"

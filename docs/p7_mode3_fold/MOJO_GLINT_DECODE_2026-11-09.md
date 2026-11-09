@@ -71,7 +71,7 @@ Top-1 vs oracle: Mojo 2007, CUDA H-TILE 2007, CUDA GEMV 2000. The equal Mojo/H-T
 - Compute-only here (85.0 ms) is lower than the resident decode at 32 steps (98.8-102.3 ms); positions and run lengths differ and I have not reconciled the two.
 - Short context only (positions 0-63); not a 2047-position figure. Not M6.
 
-## Activation-selected plug decoder (source committed; results PENDING RETEST)
+## Activation-selected plug decoder (executed and retested, 2047 teacher-forced positions)
 
 `mojo/p7_glint_select_decode.mojo` (GLINT #117, selected gather) decodes with the fold (parent) GEMV and then applies, per linear, a correction from the plug rows of the input channels with the largest current |x|:
 
@@ -81,6 +81,35 @@ Top-1 vs oracle: Mojo 2007, CUDA H-TILE 2007, CUDA GEMV 2000. The equal Mojo/H-T
 - Application: `y += sum_i (cell[h][p] - parent[h]) * absmax * x[c_i]`, summed in ascending channel order (deterministic; the CUDA path sums partials, so results are not bit-identical to it).
 - The K-major plug copy is built at load time by a device transpose kernel and kept in pinned host memory.
 
-**Status.** The file builds. A first pass of 32-step checks and three 2047-position gates (10%, 5%, 0%) was run, but it overlapped with a VM being started on the same GPU, and the operator asked for it to be retested. **No result from that pass is recorded here as validated.** A retest on an idle GPU is required before any fidelity or timing claim; until then this decoder is not evidence for #117 or M6.
+**Status.** Executed and retested. A first pass overlapped a VM start on the same GPU (qemu `usb-wiper`, process start 14:46:54); the runs that overlapped it (0% and the one-channel run) were rerun, and the 10% and 5% runs were rerun as well. Reruns used `scripts/p7_mojo_select_retest.sh`, whose idle guard refuses to run with other compute processes, a running qemu VM, or mean utilization above 40% over 10 s (the summary records ambient desktop graphics, 30-31% in the reruns; no compute process, no VM). The decoder is deterministic: every rerun equals its first pass at all 2047 positions. Files: `/home/workspace/lakes/p7_glint/mojo_select_20261109/` (first pass), `mojo_select_retest_20261109/`, `mojo_select_retest2_20261109/`, `mojo_select_retest3_20261109/` (reruns). One rerun attempt died on an LXD `snapctl` error after a host restart (not a decoder error) and was repeated.
+
+### Results (same pin, same 2047 teacher-forced positions, recorded gate: top-1 >= 95.0%, PPL within 2% of 5.486957)
+
+| Mojo arm | Gathered bytes/token | PPL | PPL vs oracle | Top-1 vs oracle | Gate | ms/token (tok/s) |
+|---|---:|---:|---:|---:|---|---:|
+| fold only (0%) | 0 | 5.847467 | +6.57% | 1870/2047 (91.35%) | FAIL | 109.8-111.4 (9.0-9.1) |
+| fold + 1 channel per linear | 0.45 MB | 5.634820 | +2.70% | 1905/2047 (93.06%) | FAIL | 134.0 (7.46) |
+| 5% of channels | 81.5 MB | 5.535055 | +0.88% | 1940/2047 (94.77%) | **FAIL (top-1 0.23 points under)** | 163.6-174.2 (5.7-6.1) |
+| 10% of channels | 162.7 MB | 5.511664 | +0.45% | 1957/2047 (95.60%) | PASS | 199.8-219.7 (4.6-5.0) |
+| resident full plug (earlier) | 0 (resident) | 5.484767 | -0.04% | 2007/2047 (98.05%) | PASS | 131.1 (7.63) |
+
+Timing ranges are first pass to rerun (the rerun had about 30% ambient graphics load). Decode is deterministic, so fidelity columns are identical between passes.
+
+**Against CUDA on the same pin and gate** (CUDA act arms from `GATE_TEACHER_FORCED_phi4mini.md`):
+
+| Arm | Mojo top-1 / PPL | CUDA top-1 / PPL | Mojo vs CUDA per-position top-1 agree | mean abs dCE |
+|---|---|---|---:|---:|
+| 10% | 95.60% / 5.5117 | 95.46-95.60% / 5.5096-5.5135 | 2016/2047 (98.49%) | 0.0277 |
+| 5% | 94.77% / 5.5351 | 95.16% / 5.5503-5.5520 | 2019/2047 (98.63%) | 0.0286 |
+| fold + 1 channel | 93.06% / 5.6348 | 93.11% / 5.6332 | not computed | not computed |
+
+- The selection semantics reproduce CUDA's: Mojo's 10% arm lands inside CUDA's run-to-run range on both PPL and top-1, and the fold-plus-one-channel arm matches CUDA's `base_only` to 0.03% PPL and one position. Per-position agreement with CUDA (98.5-98.6%) is the same size as CUDA-vs-CUDA kernel variation on this pin (98.44%).
+- **The 5% arm fails the top-1 bar on Mojo (94.77%) where it passed narrowly on CUDA (95.16%).** The gap is 8 positions; PPL is better on Mojo (5.535 vs 5.550). Under the project's worse-run rule for arms near the threshold, 5% is not a passing arm on Mojo.
+- **Hypothesis now reproduced on both backends** (not explained): one selected channel per linear (0.03% of the plug bytes) recovers PPL 5.847 -> 5.635 and top-1 91.35% -> 93.06%. A natural suspect is large-activation outlier channels; no test of that has been run.
+
+**Speed.** This decoder selects on the host with one blocking device-to-host copy and synchronize per linear (128 per token), then gathers by zero-copy kernel. The cost of that round trip alone is visible in the one-channel run: 134.0 ms/token against 109.8 for fold only, for 0.45 MB gathered. The 10% arm runs at 4.6-5.0 tok/s, below the 10 tok/s M6 target, so this is a **correctness and semantics reference, not the fast path**. CUDA's act 10% ran at 14.2 tok/s in short-context timing.
+
+**What this establishes and does not.** Established: activation-selected plug application with a zero-copy gather runs inside the real Mojo KV decode, reproduces the CUDA arms' fidelity within CUDA's own variation, and is deterministic. Not established: any M6 claim (no free-running tracking study was run on Mojo; throughput is under 10 tok/s), device-side selection, prefetch ahead of the consuming linear, overlap of the gather with compute, independent measured H2D bytes (the byte counts are gathered rows, not NIC-level counters), peak VRAM, other texts or models. #117 stays open.
+
 
 **Label correction (CUDA gate study).** The CUDA gate run named `base_only` (`ARM0_SELFETCH=0.0001`) selects ceil(0.0001*K) = 1 channel per linear, so it is the fold plus one selected channel per linear, not a pure fold-only arm. Pure fold-only (hole alone, equal to the NF4 arm) is recorded in `STATUS_2026-11-04.md` (PPL 5.833352, top-1 1864/2047 = 91.06%). Whether the single largest-|x| channel alone explains the gap between those two numbers is a hypothesis not yet tested on either backend.
