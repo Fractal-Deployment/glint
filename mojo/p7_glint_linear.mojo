@@ -3,7 +3,10 @@
 # Args: SHARD.safetensors; tests layer0 self_attn.o_proj (N=K=3072).
 from std.math import ceildiv
 from std.sys import argv
-from std.gpu import global_idx
+from std.gpu import global_idx, thread_idx, block_idx
+from std.memory import stack_allocation
+from max.gpu.sync import barrier
+from max.gpu.memory import AddressSpace
 from max.gpu.host import DeviceContext, DeviceBuffer
 from p7_safetensors import parse_header, STEntry
 from p7_forward import read_range
@@ -42,6 +45,47 @@ def glint_gemv_pinned_table[
         var w = cells[unsafe_offset=h * 16 + p] * scales[unsafe_offset=idx // BLOCK]
         acc += w * x[unsafe_offset=k].cast[DType.float32]()
     y[unsafe_offset=row] = acc
+
+
+# Warp-parallel decode: four rows per 128-thread block, 32 lanes per output.
+# Each lane traverses distinct K indices, coalescing the packed source reads.
+# A shared-memory reduction completes each row; arithmetic order is intentionally
+# not presumed bit-identical to scalar or CUDA shfl-based reduction.
+def glint_gemv_warp[
+    ho: ImmOrigin, po: ImmOrigin, so: ImmOrigin, to: ImmOrigin, xo: ImmOrigin, yo: MutOrigin
+](
+    hole: ImmPointer[UInt8, ho],
+    plug: ImmPointer[UInt8, po],
+    scales: ImmPointer[Float32, so],
+    cells: ImmPointer[Float32, to],
+    x: ImmPointer[BFloat16, xo],
+    y: MutPointer[Float32, yo],
+    n: Int32, kdim: Int32,
+):
+    var tid=thread_idx.x
+    var lane=tid & 31
+    var warp=tid >> 5
+    var row=block_idx.x * 4 + warp
+    var shared=stack_allocation[128,Float32,address_space=AddressSpace.SHARED]()
+    var acc=Float32(0)
+    if row<Int(n):
+        var kmax=Int(kdim)
+        for k in range(lane,kmax,32):
+            var idx=row*kmax+k
+            var hb=hole[unsafe_offset=idx >> 1]
+            var pb=plug[unsafe_offset=idx >> 1]
+            var shift=UInt8(4*(idx & 1))
+            var h=Int((hb >> shift) & UInt8(15))
+            var p=Int((pb >> shift) & UInt8(15))
+            var w=cells[unsafe_offset=h*16+p]*scales[unsafe_offset=idx//BLOCK]
+            acc += w*x[unsafe_offset=k].cast[DType.float32]()
+    shared[unsafe_offset=tid]=acc
+    barrier()
+    if lane==0 and row<Int(n):
+        var sum=Float32(0)
+        for j in range(32):
+            sum += shared[unsafe_offset=warp*32+j]
+        y[unsafe_offset=row]=sum
 
 def main() raises:
     var args=argv()
@@ -110,12 +154,25 @@ def main() raises:
     ctx.synchronize()
     var kernel=ctx.compile_function[glint_gemv_pinned_table[ImmUntrackedOrigin,ImmUntrackedOrigin,ImmUntrackedOrigin,ImmUntrackedOrigin,ImmUntrackedOrigin,MutUntrackedOrigin]]()
     ctx.enqueue_function(kernel,hole_u8,plug_u8,scales,cells,x,y,Int32(N),Int32(K),grid_dim=ceildiv(N,128),block_dim=128)
+    var ywarp=ctx.enqueue_create_buffer[DType.float32](N)
+    var kwarp=ctx.compile_function[glint_gemv_warp[ImmUntrackedOrigin,ImmUntrackedOrigin,ImmUntrackedOrigin,ImmUntrackedOrigin,ImmUntrackedOrigin,MutUntrackedOrigin]]()
+    ctx.enqueue_function(kwarp,hole_u8,plug_u8,scales,cells,x,ywarp,Int32(N),Int32(K),grid_dim=ceildiv(N,4),block_dim=128)
+    ctx.synchronize()
+    var yw=ctx.enqueue_create_host_buffer[DType.float32](N)
+    ctx.enqueue_copy(dst_buf=yw,src_buf=ywarp)
     ctx.synchronize()
     var yh=ctx.enqueue_create_host_buffer[DType.float32](N)
     ctx.enqueue_copy(dst_buf=yh,src_buf=y)
     ctx.synchronize()
+    var max_abs=Float64(0)
     for i in range(N):
+        var delta=abs(Float64(yh[i])-Float64(yw[i]))
+        if delta>max_abs:
+            max_abs=delta
         print("MOJO_GLINT_ROW",i,Float64(yh[i]))
+    print("MOJO_GLINT_WARP_MAX_ABS_VS_SCALAR",max_abs)
+    if max_abs>0.0001:
+        raise Error("warp GLINT numerical smoke mismatch")
     print("MOJO_GLINT_LINEAR_DONE",N,K)
     _=hole_u8.unsafe_ptr()
     _=plug_u8.unsafe_ptr()
