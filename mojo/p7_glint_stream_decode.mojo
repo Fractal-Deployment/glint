@@ -130,6 +130,16 @@ def main() raises:
             steps = steps * 10 + Int(b) - 48
     if steps < 1 or steps > NT:
         raise Error("steps outside 1..2047")
+    # Optional 5th arg: timing ablation. 0 = normal (valid outputs). 1 = copies only. 2 = compute only (no plug copies).
+    # Modes 1 and 2 produce INVALID outputs; they exist only to measure copy time, compute time and their overlap.
+    var abl = 0
+    if len(args) > 5:
+        for b in String(args[5]).as_bytes():
+            if b < 48 or b > 57:
+                raise Error("ablation must be 0, 1 or 2")
+            abl = abl * 10 + Int(b) - 48
+    if abl < 0 or abl > 2:
+        raise Error("ablation must be 0, 1 or 2")
     var ctx = DeviceContext()
     var cfg = RefineConfig(0,1,0,0,2)
     cfg.require_implemented_whole_layer_full()
@@ -391,41 +401,48 @@ def main() raises:
         ks.enqueue_wait_for(emb_done)
         for l in range(LAYERS):
             # Reuse slot only after the previous consumer of this slot finishes.
-            if l>=Int(cfg.staging_slots):
-                ctx.stream().enqueue_wait_for(comp_done[l-Int(cfg.staging_slots)])
-            for j in range(4):
-                ctx.enqueue_copy(
-                    dst_buf=plug_slot_backing[cfg.slot_for_layer(l)*4+j],
-                    src_buf=lp_host[l*4+j]
-                )
-            ctx.stream().record_event(copy_done[l])
-            ks.enqueue_wait_for(copy_done[l])
-            # Imported original math, launched with one thread because its T=2048
-            # bound cannot safely be overridden at module import time.
-            ks.enqueue_function(k_norm, x, innorm_v[l], hbf, grid_dim=1, block_dim=1)
-            ks.enqueue_function(k_gemv, wq_v[l * 4 + 0], plug_slot_v[cfg.slot_for_layer(l)*4 + 0], sw_v[l * 4 + 0], table, hbf, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 4), block_dim=128)
-            ks.enqueue_function(k_rope, qkv, cv, sv, rp, grid_dim=ceildiv(QKV, 256), block_dim=256)
-            ks.enqueue_function(k_kv, rp, kv_k[l], kv_v[l], Int32(pos), grid_dim=ceildiv(NKV * HD, 256), block_dim=256)
-            ks.enqueue_function(k_attn, rp, kv_k[l], kv_v[l], attn, attnb, Int32(pos), grid_dim=(1, NQ), block_dim=HD)
-            ks.enqueue_function(k_gemv, wq_v[l * 4 + 1], plug_slot_v[cfg.slot_for_layer(l)*4 + 1], sw_v[l * 4 + 1], table, attnb, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 4), block_dim=128)
-            ks.enqueue_function(k_res, proj, x, grid_dim=ceildiv(H, 256), block_dim=256)
-            ks.enqueue_function(k_norm, x, postnorm_v[l], hbf, grid_dim=1, block_dim=1)
-            ks.enqueue_function(k_gemv, wq_v[l * 4 + 2], plug_slot_v[cfg.slot_for_layer(l)*4 + 2], sw_v[l * 4 + 2], table, hbf, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 4), block_dim=128)
-            ks.enqueue_function(k_swi, gu, act, actb, grid_dim=ceildiv(INTER, 256), block_dim=256)
-            ks.enqueue_function(k_gemv, wq_v[l * 4 + 3], plug_slot_v[cfg.slot_for_layer(l)*4 + 3], sw_v[l * 4 + 3], table, actb, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 4), block_dim=128)
-            ks.enqueue_function(k_res, down, x, grid_dim=ceildiv(H, 256), block_dim=256)
+            if abl != 2:
+                if l>=Int(cfg.staging_slots):
+                    ctx.stream().enqueue_wait_for(comp_done[l-Int(cfg.staging_slots)])
+                for j in range(4):
+                    ctx.enqueue_copy(
+                        dst_buf=plug_slot_backing[cfg.slot_for_layer(l)*4+j],
+                        src_buf=lp_host[l*4+j]
+                    )
+                ctx.stream().record_event(copy_done[l])
+            if abl != 2:
+                ks.enqueue_wait_for(copy_done[l])
+            if abl != 1:
+                # Imported original math, launched with one thread because its T=2048
+                # bound cannot safely be overridden at module import time.
+                ks.enqueue_function(k_norm, x, innorm_v[l], hbf, grid_dim=1, block_dim=1)
+                ks.enqueue_function(k_gemv, wq_v[l * 4 + 0], plug_slot_v[cfg.slot_for_layer(l)*4 + 0], sw_v[l * 4 + 0], table, hbf, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 4), block_dim=128)
+                ks.enqueue_function(k_rope, qkv, cv, sv, rp, grid_dim=ceildiv(QKV, 256), block_dim=256)
+                ks.enqueue_function(k_kv, rp, kv_k[l], kv_v[l], Int32(pos), grid_dim=ceildiv(NKV * HD, 256), block_dim=256)
+                ks.enqueue_function(k_attn, rp, kv_k[l], kv_v[l], attn, attnb, Int32(pos), grid_dim=(1, NQ), block_dim=HD)
+                ks.enqueue_function(k_gemv, wq_v[l * 4 + 1], plug_slot_v[cfg.slot_for_layer(l)*4 + 1], sw_v[l * 4 + 1], table, attnb, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 4), block_dim=128)
+                ks.enqueue_function(k_res, proj, x, grid_dim=ceildiv(H, 256), block_dim=256)
+                ks.enqueue_function(k_norm, x, postnorm_v[l], hbf, grid_dim=1, block_dim=1)
+                ks.enqueue_function(k_gemv, wq_v[l * 4 + 2], plug_slot_v[cfg.slot_for_layer(l)*4 + 2], sw_v[l * 4 + 2], table, hbf, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 4), block_dim=128)
+                ks.enqueue_function(k_swi, gu, act, actb, grid_dim=ceildiv(INTER, 256), block_dim=256)
+                ks.enqueue_function(k_gemv, wq_v[l * 4 + 3], plug_slot_v[cfg.slot_for_layer(l)*4 + 3], sw_v[l * 4 + 3], table, actb, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 4), block_dim=128)
+                ks.enqueue_function(k_res, down, x, grid_dim=ceildiv(H, 256), block_dim=256)
             ks.record_event(comp_done[l])
-        ks.enqueue_function(k_norm, x, fnorm, hbf, grid_dim=1, block_dim=1)
-        ks.enqueue_function(k_lg, hbf, emb, lg, grid_dim=ceildiv(V, 256), block_dim=256)
-        var tv = DeviceBuffer[DType.int32](ctx, tgt.unsafe_ptr().unsafe_offset(pos), 1, owning=False)
-        var lv = DeviceBuffer[DType.float32](ctx, loss.unsafe_ptr().unsafe_offset(pos), 1, owning=False)
-        var t1v = DeviceBuffer[DType.int32](ctx, top1.unsafe_ptr().unsafe_offset(pos), 1, owning=False)
-        ks.enqueue_function(k_ce, lg, tv, lv, t1v, Int32(1), grid_dim=1, block_dim=1)
+        if abl != 1:
+            ks.enqueue_function(k_norm, x, fnorm, hbf, grid_dim=1, block_dim=1)
+            ks.enqueue_function(k_lg, hbf, emb, lg, grid_dim=ceildiv(V, 256), block_dim=256)
+            var tv = DeviceBuffer[DType.int32](ctx, tgt.unsafe_ptr().unsafe_offset(pos), 1, owning=False)
+            var lv = DeviceBuffer[DType.float32](ctx, loss.unsafe_ptr().unsafe_offset(pos), 1, owning=False)
+            var t1v = DeviceBuffer[DType.int32](ctx, top1.unsafe_ptr().unsafe_offset(pos), 1, owning=False)
+            ks.enqueue_function(k_ce, lg, tv, lv, t1v, Int32(1), grid_dim=1, block_dim=1)
         ks.synchronize()
         ctx.synchronize()
         if (pos + 1) % 64 == 0:
             print("decode positions", pos + 1, "/", steps)
     var elapsed = Float64(perf_counter_ns() - t0) / 1e9
+    if abl != 0:
+        print("MOJO_GLINT_STREAM_ABLATION mode", abl, "(timing only; outputs invalid) steps", steps, "duration_s", elapsed, "ms_per_token", elapsed * 1000 / Float64(steps))
+        return
     var lh = ctx.enqueue_create_host_buffer[DType.float32](steps)
     var th = ctx.enqueue_create_host_buffer[DType.int32](steps)
     ctx.enqueue_copy(dst_buf=lh, src_buf=loss)
