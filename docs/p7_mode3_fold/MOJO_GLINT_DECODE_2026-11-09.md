@@ -70,3 +70,17 @@ Top-1 vs oracle: Mojo 2007, CUDA H-TILE 2007, CUDA GEMV 2000. The equal Mojo/H-T
 - **Ceiling for whole-plug streaming: about 7.0 tok/s** at this link speed, regardless of how fast the compute gets. Reaching 10 tok/s (<= 100 ms/token) needs fewer bytes per token, roughly <= 1.1 GB at this bandwidth, so a selected fetch (or a smaller plug code) is required before overlap tuning can matter for the 10 tok/s target.
 - Compute-only here (85.0 ms) is lower than the resident decode at 32 steps (98.8-102.3 ms); positions and run lengths differ and I have not reconciled the two.
 - Short context only (positions 0-63); not a 2047-position figure. Not M6.
+
+## Activation-selected plug decoder (source committed; results PENDING RETEST)
+
+`mojo/p7_glint_select_decode.mojo` (GLINT #117, selected gather) decodes with the fold (parent) GEMV and then applies, per linear, a correction from the plug rows of the input channels with the largest current |x|:
+
+- Parent pass: the existing warp GEMV with a table whose rows are the NF4 parent values (`glint_codec.PARENT`), so the plug nibble is ignored.
+- Selection: per linear, the linear's bf16 input is copied to the host and the channels whose |x| key is >= the n-th largest key are kept, n = ceil(percent*K/100) (ties all kept; same rule as the CUDA act rule). Optional 6th argument fixes the channel count per linear instead (1 = the single largest-|x| channel). This is a reference implementation with one blocking host round trip per linear, **not** the fast path.
+- Gather: a kernel reads the selected K-major plug rows directly from pinned host memory through a non-owning view of the host pointer (zero-copy). A probe showed this works in Mojo 1.0/MAX 26.5 with 0 mismatches over 64 MiB at 11.27 GB/s sequential (`/home/workspace/lakes/p7_glint/mojo_zerocopy_probe_20261109/`).
+- Application: `y += sum_i (cell[h][p] - parent[h]) * absmax * x[c_i]`, summed in ascending channel order (deterministic; the CUDA path sums partials, so results are not bit-identical to it).
+- The K-major plug copy is built at load time by a device transpose kernel and kept in pinned host memory.
+
+**Status.** The file builds. A first pass of 32-step checks and three 2047-position gates (10%, 5%, 0%) was run, but it overlapped with a VM being started on the same GPU, and the operator asked for it to be retested. **No result from that pass is recorded here as validated.** A retest on an idle GPU is required before any fidelity or timing claim; until then this decoder is not evidence for #117 or M6.
+
+**Label correction (CUDA gate study).** The CUDA gate run named `base_only` (`ARM0_SELFETCH=0.0001`) selects ceil(0.0001*K) = 1 channel per linear, so it is the fold plus one selected channel per linear, not a pure fold-only arm. Pure fold-only (hole alone, equal to the NF4 arm) is recorded in `STATUS_2026-11-04.md` (PPL 5.833352, top-1 1864/2047 = 91.06%). Whether the single largest-|x| channel alone explains the gap between those two numbers is a hypothesis not yet tested on either backend.
