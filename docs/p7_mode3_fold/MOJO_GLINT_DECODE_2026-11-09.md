@@ -141,3 +141,20 @@ Not shown: M6 (10 tok/s is not reached by any gate-passing arm; free-running tra
 | fold-only | fast+attn | 91.40% (1871/2047) | 5.8322 | 29.8 |
 
 Per-position agreement at act 10%: fast+attn vs reference 98.73%, fast+attn vs fast 98.39% (noise floor 98.44-98.53%). Passes the recorded gate. 8.81 tok/s is still below 10: fold-only runs at 33.6 ms/token, so ~80 ms/token of the act-10% arm is selection (128 host round trips per token plus 163 MB/token gather, which alone is >= 14.5 ms at 11.2 GB/s). M6 not met.
+
+### Device-side selection, K-major correction, 16-byte gather (`fast+attn+dsel+kmaj+vgat`), 2047 positions
+
+Where the activation-selected arm spent its time (act 10%, 32-step ablations, timing only, results of the ablated runs are not valid): fold-only ~33 ms/token; selection ~6; gather of 162.7 MB ~30 (about half the link rate); selected-channel correction ~58. The 128 host round trips were NOT the bottleneck: moving selection onto the device (`p7_select_device.mojo`: 15-step threshold search + block scan, same rule, ties kept, ascending indices) reproduced the host-selection run exactly (identical token and loss at every position, identical bytes gathered) at the same speed. The correction kernel was the cost: each thread read the hole nibble and block scale at row-major position r*K+c, so neighbouring threads were K/2 bytes apart. A K-major copy of hole and scales (`apply_corr_k`; same arithmetic and channel order) makes those reads coalesced; 16-byte loads in the zero-copy gather (`gather_rows_d4`) raise gather efficiency.
+
+| Mojo, same pin, idle-guarded | top-1 vs oracle | PPL | ms/token | tok/s | bytes gathered/token |
+|---|---|---|---|---|---|
+| act 10%, host selection, reference kernels | 95.60% | 5.5117 | 220 | 4.55 | 162.7 MB |
+| act 10%, fast+attn (host selection) | 95.55% | 5.5124 | 113 | 8.81 | 162.7 MB |
+| act 10%, fast+attn+dsel+kmaj+vgat | 95.55% (1956/2047) | 5.5124 | 82.5 | **12.12** | 162.7 MB |
+| act 5%, fast+attn+dsel+kmaj+vgat | 95.11% (1947/2047) | 5.5438 | 61.0 | 16.39 | 81.5 MB |
+
+The last act-10% row reproduces the fast+attn host-selection run at all 2047 positions (same tokens, same loss, same PPL to every printed digit). Act 5% passes the recorded gate narrowly (95.11% vs 95.0%; PPL +1.0% vs 5.486957); the earlier reference-kernel Mojo run of act 5% scored 94.77% (FAIL) and CUDA 95.16%, so this arm sits on the threshold and should be treated as borderline, not as a settled pass. Per-token context is the whole 2047-position teacher-forced pass (mean context ~1000).
+
+K-major A/B (128 steps, alternating, two repeats): K-major 81.4 / 81.7 ms/token vs row-major correction 130.4 / 130.0. Cost: peak nvidia-smi memory.used 6200 MiB with K-major copies vs 4344 MiB without (both include ~0.66 GiB of desktop use at idle), i.e. +1.86 GiB. Logs: lakes/p7_glint/mojo_allfast_2047_20261109, mojo_kmaj_ab_20261109, mojo_vram_20261109, mojo_dsel_abl_20261109.
+
+What this does and does not show: act 10% now passes the recorded teacher-forced gate AND exceeds 10 tok/s on the 2047-position decode. M6 additionally requires free-running generation to track the full model under demand-map spec Amendment 2, which has not been measured on Mojo, so M6 is not accepted. The fold, selection, gather and correction run strictly in sequence per linear (gather overlaps only its own linear's fold GEMV); there is no early prefetch (#117 prefetch-timing control), and the K-major copies add VRAM that a different layout could avoid. Single runs on a desktop machine with ambient graphics load (mean 20-29% at start); A/B repeats agree within 0.4%.
