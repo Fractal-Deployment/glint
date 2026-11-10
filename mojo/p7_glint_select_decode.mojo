@@ -4,7 +4,7 @@
 # Usage: mojo build -I mojo -o p7_glint_select_decode mojo/p7_glint_select_decode.mojo
 #        ./p7_glint_select_decode GLINT_PIN_DIR MODEL_DIR ARTIFACTS_DIR [steps] [percent] [fixed_n]
 #        percent 0..100 of input channels per linear; fixed_n > 0 overrides it with that many channels per linear
-#        7th arg "fast" selects the parallel norm / logits / cross-entropy and vectorised GEMV kernels (summation order differs from the
+#        7th arg "fast" (or "fast+attn", which also uses the position-parallel attention kernel) selects the parallel norm / logits / cross-entropy and vectorised GEMV kernels (summation order differs from the
 #        reference kernels; validate on the recorded gate). Default = reference kernels.
 # percent 0 = fold only; 100 = every channel (differs from the resident full-cell GEMV only in summation order).
 # Selection rule mirrors the CUDA act rule: n = ceil(percent*K/100); keep every channel whose |x| key >= the n-th largest key
@@ -23,6 +23,7 @@ from p7_forward import bf16r, embed_gather, rms_norm_bf16, rope, residual_add, s
 from p7_glint_linear import glint_gemv_warp
 from p7_glint_gemv_fast import glint_gemv_fast
 from p7_decode_fast_kernels import rms_norm_block, logits_warp, ce_argmax_block
+from p7_attention_split import attention_split_partial, attention_split_combine, NCH
 
 comptime CTX = 2048
 comptime NT = CTX - 1
@@ -212,8 +213,10 @@ def main() raises:
         raise Error("percent must be 0..100")
     # Optional 6th arg: fixed channel count per linear (overrides percent), e.g. 1 = the single largest-|x| channel.
     var fast = False
+    var attn_split = False
     if len(args) > 7:
-        fast = String(args[7]) == "fast"
+        fast = String(args[7]) == "fast" or String(args[7]) == "fast+attn"
+        attn_split = String(args[7]) == "fast+attn"
     var fixed_n = 0
     if len(args) > 6:
         for b in String(args[6]).as_bytes():
@@ -417,6 +420,9 @@ def main() raises:
     var rp = ctx.enqueue_create_buffer[DType.float32](QKV)
     var attn = ctx.enqueue_create_buffer[DType.float32](H)
     var attnb = ctx.enqueue_create_buffer[DType.bfloat16](H)
+    var att_pm = ctx.enqueue_create_buffer[DType.float32](NQ * NCH)
+    var att_pd = ctx.enqueue_create_buffer[DType.float32](NQ * NCH)
+    var att_pa = ctx.enqueue_create_buffer[DType.float32](NQ * NCH * HD)
     var proj = ctx.enqueue_create_buffer[DType.float32](H)
     var gu = ctx.enqueue_create_buffer[DType.float32](2 * INTER)
     var actb = ctx.enqueue_create_buffer[DType.bfloat16](INTER)
@@ -445,6 +451,8 @@ def main() raises:
     var k_gemv = ctx.compile_function[glint_gemv_warp[ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
     var k_kv = ctx.compile_function[kv_write[ImmUntrackedOrigin, MutUntrackedOrigin, MutUntrackedOrigin]]()
     var k_attn = ctx.compile_function[attention_one[ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin, MutUntrackedOrigin]]()
+    var k_attp = ctx.compile_function[attention_split_partial[ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin, MutUntrackedOrigin, MutUntrackedOrigin]]()
+    var k_attc = ctx.compile_function[attention_split_combine[ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin, MutUntrackedOrigin]]()
     var k_lg = ctx.compile_function[logits_one[ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
     var k_ce = ctx.compile_function[ce_argmax[ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin, MutUntrackedOrigin]]()
 
@@ -514,7 +522,7 @@ def main() raises:
         nsel_i = fixed_n
     var bytes_total = 0
     var frac_sum = Float64(0)
-    print("MOJO_GLINT_SELECT_CONFIG fast", fast, "percent", pct, "fixed_n", fixed_n, "nsel_hidden", nsel_h, "nsel_inter", nsel_i)
+    print("MOJO_GLINT_SELECT_CONFIG fast", fast, "attn_split", attn_split, "percent", pct, "fixed_n", fixed_n, "nsel_hidden", nsel_h, "nsel_inter", nsel_i)
     print("MOJO_GLINT_SELECT_DECODE_BEGIN", steps)
     var t0 = perf_counter_ns()
     for pos in range(steps):
@@ -568,7 +576,11 @@ def main() raises:
                 frac_sum += Float64(cnt0) / Float64(H)
             ks.enqueue_function(k_rope, qkv, cv, sv, rp, grid_dim=ceildiv(QKV, 256), block_dim=256)
             ks.enqueue_function(k_kv, rp, kv_k[l], kv_v[l], Int32(pos), grid_dim=ceildiv(NKV * HD, 256), block_dim=256)
-            ks.enqueue_function(k_attn, rp, kv_k[l], kv_v[l], attn, attnb, Int32(pos), grid_dim=(1, NQ), block_dim=HD)
+            if attn_split:
+                ks.enqueue_function(k_attp, rp, kv_k[l], kv_v[l], att_pm, att_pd, att_pa, Int32(pos), grid_dim=(NCH, NQ), block_dim=128)
+                ks.enqueue_function(k_attc, att_pm, att_pd, att_pa, attn, attnb, grid_dim=NQ, block_dim=HD)
+            else:
+                ks.enqueue_function(k_attn, rp, kv_k[l], kv_v[l], attn, attnb, Int32(pos), grid_dim=(1, NQ), block_dim=HD)
             # ---- o_proj: fold GEMV, then the selected-channel correction ----
             ks.record_event(ev_in)
             if fast:

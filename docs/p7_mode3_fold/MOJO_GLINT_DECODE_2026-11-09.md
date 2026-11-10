@@ -128,3 +128,16 @@ Per-token cost breakdown of the reference decoder (short context): logits 32 ms,
 Per-position top-1 agreement, fast vs reference, act 10%: 2016/2047 = 98.49% (recorded CUDA-vs-CUDA / Mojo-vs-CUDA noise floor 98.44-98.53%). act 10% still passes the recorded gate (>=95.0%, PPL within 2% of 5.487).
 
 Not shown: M6 (10 tok/s is not reached by any gate-passing arm; free-running tracking under Amendment 2 not measured on Mojo). Remaining cost at 2047 positions is attention (sequential per-position loop) and 128 per-token host round trips in the selection step. Fold-only fails the gate as before. 32-step runs are not used for any claim.
+
+### Position-parallel attention (`fast+attn`), 2047 positions, same pin, idle-guarded
+
+`mojo/p7_attention_split.mojo`: positions of one head split over 8 blocks, 4 warps per block with their own online-softmax state, then a combine kernel. One-layer microbench (`p7_attention_split_bench.mojo`, synthetic K/V): position 100 0.075 -> 0.009 ms, 1000 0.99 -> 0.043 ms, 2046 1.98 -> 0.066 ms; max abs output difference <= 1.1e-3 on values of magnitude ~1 (bf16 rounding of the softmax weight happens against a different running max).
+
+| Arm (Mojo, same pin) | kernels | top-1 vs oracle | PPL | tok/s |
+|---|---|---|---|---|
+| act 10% | reference | 95.60% | 5.5117 | 4.55 |
+| act 10% | fast | 95.46% | 5.5075 | 7.57 |
+| act 10% | fast+attn | 95.55% (1956/2047) | 5.5124 | 8.81 |
+| fold-only | fast+attn | 91.40% (1871/2047) | 5.8322 | 29.8 |
+
+Per-position agreement at act 10%: fast+attn vs reference 98.73%, fast+attn vs fast 98.39% (noise floor 98.44-98.53%). Passes the recorded gate. 8.81 tok/s is still below 10: fold-only runs at 33.6 ms/token, so ~80 ms/token of the act-10% arm is selection (128 host round trips per token plus 163 MB/token gather, which alone is >= 14.5 ms at 11.2 GB/s). M6 not met.
