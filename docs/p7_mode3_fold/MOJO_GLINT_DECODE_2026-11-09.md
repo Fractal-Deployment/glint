@@ -158,3 +158,20 @@ The last act-10% row reproduces the fast+attn host-selection run at all 2047 pos
 K-major A/B (128 steps, alternating, two repeats): K-major 81.4 / 81.7 ms/token vs row-major correction 130.4 / 130.0. Cost: peak nvidia-smi memory.used 6200 MiB with K-major copies vs 4344 MiB without (both include ~0.66 GiB of desktop use at idle), i.e. +1.86 GiB. Logs: lakes/p7_glint/mojo_allfast_2047_20261109, mojo_kmaj_ab_20261109, mojo_vram_20261109, mojo_dsel_abl_20261109.
 
 What this does and does not show: act 10% now passes the recorded teacher-forced gate AND exceeds 10 tok/s on the 2047-position decode. M6 additionally requires free-running generation to track the full model under demand-map spec Amendment 2, which has not been measured on Mojo, so M6 is not accepted. The fold, selection, gather and correction run strictly in sequence per linear (gather overlaps only its own linear's fold GEMV); there is no early prefetch (#117 prefetch-timing control), and the K-major copies add VRAM that a different layout could avoid. Single runs on a desktop machine with ambient graphics load (mean 20-29% at start); A/B repeats agree within 0.4%.
+
+### Free-running rollout on Mojo (DEMAND_MAP_SPEC Amendment 3 protocol), 2026-11-09
+
+Mode `roll` of `p7_glint_select_decode`: 12 prompts (64 evaluation-text tokens at offsets 0, 128, ..., 1408), 32 greedy steps each through the KV-cache decode, 384 generated tokens per arm. Reference = the Mojo full-plug arm (every channel selected, `percent 100`), same pin, same kernels (`fast+attn+dsel+kmaj+vgat`). Thresholds are those fixed in Amendments 3-4 (derived from the CUDA BF16 anchor): tracks = mean matched prefix >= 20.0 and agreement >= 82.5%. No Mojo BF16 anchor exists, so the 0.75x / 0.9x anchor-relative form was not recomputed; the absolute thresholds were used.
+
+| act arm | matched prefix (of 32) | agreement (384) | steps 1-16 / 17-32 | identical prompts | tracks | tok/s in this run |
+|---|---|---|---|---|---|---|
+| 100% (reference) | 32.00 | 100.0% | - | 12/12 | (reference) | 2.30 |
+| 50% | 27.92 | 92.7% | 94.8% / 90.6% | 10/12 | **yes** | 4.72 |
+| 25% | 14.75 | 54.9% | 64.1% / 45.8% | 3/12 | no | 8.01 |
+| 10% | 13.08 | 54.2% | 64.6% / 43.8% | 3/12 | no | 14.5 |
+| 5% | 10.42 | 45.6% | 56.8% / 34.4% | 2/12 | no | 19.6 |
+| 0% (fold only) | 5.08 | 27.1% | 36.5% / 17.7% | 0/12 | no | 33.1 |
+
+(tok/s over 95-position prompts, mean context ~48, so it overstates long-context speed; use the 2047-position table for speed.)
+
+Reading: on Mojo, as in the CUDA amendments, only about half the plug lets activation selection track the full model, and that arm moves roughly 0.8 GB per token, which the ~11 GB/s link cannot deliver at 10 tok/s (>= ~73 ms/token for the transfer alone, measured 4.7 tok/s here). Act 10% passes the recorded teacher-forced gate (95.55%, 12.1 tok/s) but fails tracking (13.08 / 54.2%). **No Mojo arm both tracks and runs at >= 10 tok/s, so M6 (#92) is not met on this backend.** The CUDA act-25% arm scored 72.7% agreement in Amendment 3 versus 54.9% here; the reference arms differ (CUDA full model vs Mojo full plug) and 12 prompts is a small sample, so the gap is not attributed to a cause. Single run per arm; the decoder is deterministic on repeat. Routes the spec already names for closing the byte gap (3-bit tiered plug, Amendments 5-6) need a packed mixed-width store that does not exist in this repository. Logs: lakes/p7_glint/mojo_roll_20261109.

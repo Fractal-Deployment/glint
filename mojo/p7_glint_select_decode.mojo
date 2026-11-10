@@ -218,6 +218,7 @@ def main() raises:
     var dsel = False
     var kmaj = False
     var vgat = False
+    var roll = False
     var abl = 0
     if len(args) > 7:
         var mode = String(args[7])
@@ -226,6 +227,7 @@ def main() raises:
         dsel = "dsel" in mode
         kmaj = "kmaj" in mode
         vgat = "vgat" in mode
+        roll = "roll" in mode
         # timing-only ablations of the device-selection path (results are NOT valid): abl1 = select only, abl2 = select + gather, abl3 = select + correction on stale staging
         if "abl1" in mode:
             abl = 1
@@ -233,6 +235,8 @@ def main() raises:
             abl = 2
         elif "abl3" in mode:
             abl = 3
+    if roll:
+        steps = 12 * 95
     var fixed_n = 0
     if len(args) > 6:
         for b in String(args[6]).as_bytes():
@@ -566,14 +570,30 @@ def main() raises:
         nsel_i = fixed_n
     var bytes_total = 0
     var frac_sum = Float64(0)
-    print("MOJO_GLINT_SELECT_CONFIG fast", fast, "attn_split", attn_split, "dsel", dsel, "kmaj", kmaj, "vgat", vgat, "abl", abl, "percent", pct, "fixed_n", fixed_n, "nsel_hidden", nsel_h, "nsel_inter", nsel_i)
+    print("MOJO_GLINT_SELECT_CONFIG fast", fast, "attn_split", attn_split, "dsel", dsel, "kmaj", kmaj, "vgat", vgat, "roll", roll, "abl", abl, "percent", pct, "fixed_n", fixed_n, "nsel_hidden", nsel_h, "nsel_inter", nsel_i)
     print("MOJO_GLINT_SELECT_DECODE_BEGIN", steps)
     var t0 = perf_counter_ns()
+    var gen = List[Int]()
+    for _ in range(12 * 32):
+        gen.append(0)
+    var t1h = ctx.enqueue_create_host_buffer[DType.int32](1)
     for pos in range(steps):
-        tokh[0] = toks[pos]
+        # Free-running rollout (Amendment 3 protocol): 12 prompts of 64 evaluation-text tokens at offsets 0,128,...,1408, then 32 greedy
+        # steps; per prompt 95 forward passes (positions 0..94), generated token s is the argmax at position 63+s and is fed at 64+s.
+        var q = pos
+        var pi = 0
+        if roll:
+            q = pos % 95
+            pi = pos // 95
+            if q < 64:
+                tokh[0] = toks[pi * 128 + q]
+            else:
+                tokh[0] = Int32(gen[pi * 32 + q - 64])
+        else:
+            tokh[0] = toks[pos]
         ctx.enqueue_copy(dst_buf=tokd, src_buf=tokh)
-        var cv = DeviceBuffer[DType.float32](ctx, ct.unsafe_ptr().unsafe_offset(pos * (ROT // 2)), ROT // 2, owning=False)
-        var sv = DeviceBuffer[DType.float32](ctx, st.unsafe_ptr().unsafe_offset(pos * (ROT // 2)), ROT // 2, owning=False)
+        var cv = DeviceBuffer[DType.float32](ctx, ct.unsafe_ptr().unsafe_offset(q * (ROT // 2)), ROT // 2, owning=False)
+        var sv = DeviceBuffer[DType.float32](ctx, st.unsafe_ptr().unsafe_offset(q * (ROT // 2)), ROT // 2, owning=False)
         ctx.enqueue_function(k_embed, emb, tokd, x, grid_dim=ceildiv(H, 256), block_dim=256)
         ctx.stream().record_event(emb_done)
         ks.enqueue_wait_for(emb_done)
@@ -634,12 +654,12 @@ def main() raises:
                 bytes_total += cnt0 * (QKV // 2)
                 frac_sum += Float64(cnt0) / Float64(H)
             ks.enqueue_function(k_rope, qkv, cv, sv, rp, grid_dim=ceildiv(QKV, 256), block_dim=256)
-            ks.enqueue_function(k_kv, rp, kv_k[l], kv_v[l], Int32(pos), grid_dim=ceildiv(NKV * HD, 256), block_dim=256)
+            ks.enqueue_function(k_kv, rp, kv_k[l], kv_v[l], Int32(q), grid_dim=ceildiv(NKV * HD, 256), block_dim=256)
             if attn_split:
-                ks.enqueue_function(k_attp, rp, kv_k[l], kv_v[l], att_pm, att_pd, att_pa, Int32(pos), grid_dim=(NCH, NQ), block_dim=128)
+                ks.enqueue_function(k_attp, rp, kv_k[l], kv_v[l], att_pm, att_pd, att_pa, Int32(q), grid_dim=(NCH, NQ), block_dim=128)
                 ks.enqueue_function(k_attc, att_pm, att_pd, att_pa, attn, attnb, grid_dim=NQ, block_dim=HD)
             else:
-                ks.enqueue_function(k_attn, rp, kv_k[l], kv_v[l], attn, attnb, Int32(pos), grid_dim=(1, NQ), block_dim=HD)
+                ks.enqueue_function(k_attn, rp, kv_k[l], kv_v[l], attn, attnb, Int32(q), grid_dim=(1, NQ), block_dim=HD)
             # ---- o_proj: fold GEMV, then the selected-channel correction ----
             ks.record_event(ev_in)
             if fast:
@@ -817,6 +837,10 @@ def main() raises:
             ks.enqueue_function(k_ce, lg, tv, lv, t1v, Int32(1), grid_dim=1, block_dim=1)
         ks.synchronize()
         ctx.synchronize()
+        if roll and q >= 63:
+            ctx.enqueue_copy(dst_buf=t1h, src_buf=t1v)
+            ctx.synchronize()
+            gen[pi * 32 + q - 63] = Int(t1h[0])
         if (pos + 1) % 64 == 0:
             print("decode positions", pos + 1, "/", steps)
     var elapsed = Float64(perf_counter_ns() - t0) / 1e9
@@ -851,7 +875,14 @@ def main() raises:
         var o = Int(ob[4 * pos]) | (Int(ob[4 * pos + 1]) << 8) | (Int(ob[4 * pos + 2]) << 16) | (Int(ob[4 * pos + 3]) << 24)
         if Int(th[pos]) == o:
             matches += 1
-        print("MOJO_GLINT_SELECT_POSITION", pos, Int(th[pos]), Float64(lh[pos]))
+        if not roll:
+            print("MOJO_GLINT_SELECT_POSITION", pos, Int(th[pos]), Float64(lh[pos]))
+    if roll:
+        for pi in range(12):
+            var line = String("MOJO_ROLL prompt ") + String(pi) + String(" tokens")
+            for si in range(32):
+                line += String(" ") + String(gen[pi * 32 + si])
+            print(line)
     print("MOJO_GLINT_SELECT_DECODE steps", steps, "duration_s", elapsed, "ms_per_token", elapsed * 1000 / Float64(steps), "tokens_per_s", Float64(steps) / elapsed)
     print("MOJO_GLINT_SELECT_DECODE ppl", exp(total_ce / Float64(steps)), "oracle_top1", matches, "/", steps)
     print("MOJO_GLINT_SELECT_STATS percent", pct, "gathered_bytes_per_token_mean", Float64(bytes_total) / Float64(steps), "mean_selected_channel_fraction", frac_sum / Float64(steps * LAYERS * 4))
