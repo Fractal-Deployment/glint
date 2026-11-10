@@ -1,7 +1,7 @@
 #!/bin/bash
 # Retest the Mojo activation-selected decoder on an IDLE GPU. Refuses to start if the GPU is busy.
-# Usage: scripts/p7_mojo_select_retest.sh OUTDIR "percent[:fixed_n] ..." [steps]
-#   e.g. scripts/p7_mojo_select_retest.sh /home/workspace/lakes/p7_glint/mojo_select_retest "0 10 5 0:1" 2047
+# Usage: scripts/p7_mojo_select_retest.sh OUTDIR "percent[:fixed_n[:fast]] ..." [steps]   (mode "ref" = reference kernels, "fast" = parallel kernels)
+#   e.g. scripts/p7_mojo_select_retest.sh /home/workspace/lakes/p7_glint/mojo_select_retest "0 10 5 0:1 10:0:fast" 2047
 # Each config runs once under the GPU lease; per-position logs and a summary table go to OUTDIR.
 set -u
 R="$(cd "$(dirname "$0")/.." && pwd)"
@@ -29,9 +29,9 @@ fi
 { echo "# retest $(date -Is) host $(hostname) driver $(nvidia-smi --query-gpu=driver_version --format=csv,noheader)"; echo "# idle guard passed: compute_processes=$apps qemu_vms=$vms mean_util_10s=${mean}% (ambient desktop graphics included)"; } >> "$OUT/summary.txt"
 lxc exec 40-Runtime-Deps -- bash -c "export MODULAR_HOME=/root/.pixi/envs/modular/share/max; export PATH=/root/.pixi/envs/modular/bin:\$PATH; cd $R && mojo build -I mojo -o /tmp/p7_select_retest mojo/p7_glint_select_decode.mojo" > "$OUT/build.log" 2>&1 || { echo "build failed" | tee -a "$OUT/summary.txt"; exit 3; }
 for c in $CFGS; do
-  pct="${c%%:*}"; fx=0; [ "$c" != "$pct" ] && fx="${c##*:}"
-  tag="p${pct}_n${fx}_s${STEPS}"
-  bash "$FL" -- lxc exec 40-Runtime-Deps -- env MODULAR_HOME=/root/.pixi/envs/modular/share/max /tmp/p7_select_retest "$PIN" "$M" "$A" "$STEPS" "$pct" "$fx" > "$OUT/$tag.log" 2>&1
+  IFS=: read -r pct fx mode <<< "$c"; fx="${fx:-0}"; mode="${mode:-ref}"
+  tag="p${pct}_n${fx}_${mode}_s${STEPS}"
+  bash "$FL" -- lxc exec 40-Runtime-Deps -- env MODULAR_HOME=/root/.pixi/envs/modular/share/max /tmp/p7_select_retest "$PIN" "$M" "$A" "$STEPS" "$pct" "$fx" "$mode" > "$OUT/$tag.log" 2>&1
   echo "== $tag exit $?" >> "$OUT/summary.txt"
   grep -E "^MOJO_GLINT_SELECT_(CONFIG|DECODE steps|DECODE ppl|STATS)" "$OUT/$tag.log" | cut -c1-230 >> "$OUT/summary.txt"
 done

@@ -113,3 +113,18 @@ Timing ranges are first pass to rerun (the rerun had about 30% ambient graphics 
 
 
 **Label correction (CUDA gate study).** The CUDA gate run named `base_only` (`ARM0_SELFETCH=0.0001`) selects ceil(0.0001*K) = 1 channel per linear, so it is the fold plus one selected channel per linear, not a pure fold-only arm. Pure fold-only (hole alone, equal to the NF4 arm) is recorded in `STATUS_2026-11-04.md` (PPL 5.833352, top-1 1864/2047 = 91.06%). Whether the single largest-|x| channel alone explains the gap between those two numbers is a hypothesis not yet tested on either backend.
+
+## Parallel kernels ("fast" flag), 2047-position gate, same pin, 2026-11-09 evening
+
+Per-token cost breakdown of the reference decoder (short context): logits 32 ms, GEMV 37 ms, cross-entropy 11 ms, rms_norm 10 ms (single-thread kernels), attention 1.7 ms at position 100 rising to 55 ms at 2000. New kernels (`p7_decode_fast_kernels.mojo`, `p7_glint_gemv_fast.mojo`) compute the same math with a different summation order, so they are not bit-identical; they are selected with a 7th argument `fast` and the reference path is unchanged.
+
+| Arm (Mojo, same pin) | kernels | top-1 vs oracle | PPL | tok/s |
+|---|---|---|---|---|
+| fold-only (0%) | reference | 1870/2047 = 91.35% | 5.8475 | 9.1 |
+| fold-only (0%) | fast | 1868/2047 = 91.25% | 5.8418 | 17.1 |
+| act 10% | reference | 1957/2047 = 95.60% | 5.5117 | 4.55 |
+| act 10% | fast | 1954/2047 = 95.46% | 5.5075 | 7.57 |
+
+Per-position top-1 agreement, fast vs reference, act 10%: 2016/2047 = 98.49% (recorded CUDA-vs-CUDA / Mojo-vs-CUDA noise floor 98.44-98.53%). act 10% still passes the recorded gate (>=95.0%, PPL within 2% of 5.487).
+
+Not shown: M6 (10 tok/s is not reached by any gate-passing arm; free-running tracking under Amendment 2 not measured on Mojo). Remaining cost at 2047 positions is attention (sequential per-position loop) and 128 per-token host round trips in the selection step. Fold-only fails the gate as before. 32-step runs are not used for any claim.

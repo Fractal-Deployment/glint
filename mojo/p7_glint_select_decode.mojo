@@ -4,6 +4,8 @@
 # Usage: mojo build -I mojo -o p7_glint_select_decode mojo/p7_glint_select_decode.mojo
 #        ./p7_glint_select_decode GLINT_PIN_DIR MODEL_DIR ARTIFACTS_DIR [steps] [percent] [fixed_n]
 #        percent 0..100 of input channels per linear; fixed_n > 0 overrides it with that many channels per linear
+#        7th arg "fast" selects the parallel norm / logits / cross-entropy and vectorised GEMV kernels (summation order differs from the
+#        reference kernels; validate on the recorded gate). Default = reference kernels.
 # percent 0 = fold only; 100 = every channel (differs from the resident full-cell GEMV only in summation order).
 # Selection rule mirrors the CUDA act rule: n = ceil(percent*K/100); keep every channel whose |x| key >= the n-th largest key
 # (ties are all kept). Selection runs on the host after a per-linear device-to-host copy of the linear's input (a reference
@@ -19,6 +21,8 @@ from max.gpu.host import DeviceContext, DeviceBuffer
 from p7_safetensors import parse_header, STEntry
 from p7_forward import bf16r, embed_gather, rms_norm_bf16, rope, residual_add, swiglu, ce_argmax, read_range
 from p7_glint_linear import glint_gemv_warp
+from p7_glint_gemv_fast import glint_gemv_fast
+from p7_decode_fast_kernels import rms_norm_block, logits_warp, ce_argmax_block
 
 comptime CTX = 2048
 comptime NT = CTX - 1
@@ -207,6 +211,9 @@ def main() raises:
     if pct < 0 or pct > 100:
         raise Error("percent must be 0..100")
     # Optional 6th arg: fixed channel count per linear (overrides percent), e.g. 1 = the single largest-|x| channel.
+    var fast = False
+    if len(args) > 7:
+        fast = String(args[7]) == "fast"
     var fixed_n = 0
     if len(args) > 6:
         for b in String(args[6]).as_bytes():
@@ -490,6 +497,14 @@ def main() raises:
     ctx.synchronize()
     var k_gather = ctx.compile_function[gather_rows[ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
     var k_corr = ctx.compile_function[apply_corr[ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
+    var k_normf = ctx.compile_function[rms_norm_block[ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
+    var k_lgf = ctx.compile_function[logits_warp[ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
+    var k_cef = ctx.compile_function[ce_argmax_block[ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin, MutUntrackedOrigin]]()
+    var k_gemvf = ctx.compile_function[glint_gemv_fast[False, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
+    var wq32 = List[DeviceBuffer[DType.uint32]]()
+    for i in range(LAYERS * 4):
+        var jj = i % 4
+        wq32.append(DeviceBuffer[DType.uint32](ctx, lq[i].unsafe_ptr().unsafe_bitcast[UInt32](), kin[jj] * nout[jj] // 8, owning=False))
     var nsel_h = (pct * H + 99) // 100
     var nsel_i = (pct * INTER + 99) // 100
     if pct > 0 and nsel_h < 1:
@@ -499,7 +514,7 @@ def main() raises:
         nsel_i = fixed_n
     var bytes_total = 0
     var frac_sum = Float64(0)
-    print("MOJO_GLINT_SELECT_CONFIG percent", pct, "fixed_n", fixed_n, "nsel_hidden", nsel_h, "nsel_inter", nsel_i)
+    print("MOJO_GLINT_SELECT_CONFIG fast", fast, "percent", pct, "fixed_n", fixed_n, "nsel_hidden", nsel_h, "nsel_inter", nsel_i)
     print("MOJO_GLINT_SELECT_DECODE_BEGIN", steps)
     var t0 = perf_counter_ns()
     for pos in range(steps):
@@ -511,10 +526,16 @@ def main() raises:
         ctx.stream().record_event(emb_done)
         ks.enqueue_wait_for(emb_done)
         for l in range(LAYERS):
-            ks.enqueue_function(k_norm, x, innorm_v[l], hbf, grid_dim=1, block_dim=1)
+            if fast:
+                ks.enqueue_function(k_normf, x, innorm_v[l], hbf, grid_dim=1, block_dim=256)
+            else:
+                ks.enqueue_function(k_norm, x, innorm_v[l], hbf, grid_dim=1, block_dim=1)
             # ---- qkv_proj: fold GEMV, then the selected-channel correction ----
             ks.record_event(ev_in)
-            ks.enqueue_function(k_gemv, wq_v[l * 4 + 0], wq_v[l * 4 + 0], sw_v[l * 4 + 0], t0b, hbf, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 4), block_dim=128)
+            if fast:
+                ks.enqueue_function(k_gemvf, wq32[l * 4 + 0], wq32[l * 4 + 0], sw_v[l * 4 + 0], t0b, hbf, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 4), block_dim=128)
+            else:
+                ks.enqueue_function(k_gemv, wq_v[l * 4 + 0], wq_v[l * 4 + 0], sw_v[l * 4 + 0], t0b, hbf, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 4), block_dim=128)
             if nsel_h > 0:
                 ctx.stream().enqueue_wait_for(ev_in)
                 ctx.enqueue_copy(dst_buf=xh_h, src_buf=hbf16)
@@ -550,7 +571,10 @@ def main() raises:
             ks.enqueue_function(k_attn, rp, kv_k[l], kv_v[l], attn, attnb, Int32(pos), grid_dim=(1, NQ), block_dim=HD)
             # ---- o_proj: fold GEMV, then the selected-channel correction ----
             ks.record_event(ev_in)
-            ks.enqueue_function(k_gemv, wq_v[l * 4 + 1], wq_v[l * 4 + 1], sw_v[l * 4 + 1], t0b, attnb, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 4), block_dim=128)
+            if fast:
+                ks.enqueue_function(k_gemvf, wq32[l * 4 + 1], wq32[l * 4 + 1], sw_v[l * 4 + 1], t0b, attnb, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 4), block_dim=128)
+            else:
+                ks.enqueue_function(k_gemv, wq_v[l * 4 + 1], wq_v[l * 4 + 1], sw_v[l * 4 + 1], t0b, attnb, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 4), block_dim=128)
             if nsel_h > 0:
                 ctx.stream().enqueue_wait_for(ev_in)
                 ctx.enqueue_copy(dst_buf=xh_h, src_buf=attnb16)
@@ -582,10 +606,16 @@ def main() raises:
                 bytes_total += cnt1 * (H // 2)
                 frac_sum += Float64(cnt1) / Float64(H)
             ks.enqueue_function(k_res, proj, x, grid_dim=ceildiv(H, 256), block_dim=256)
-            ks.enqueue_function(k_norm, x, postnorm_v[l], hbf, grid_dim=1, block_dim=1)
+            if fast:
+                ks.enqueue_function(k_normf, x, postnorm_v[l], hbf, grid_dim=1, block_dim=256)
+            else:
+                ks.enqueue_function(k_norm, x, postnorm_v[l], hbf, grid_dim=1, block_dim=1)
             # ---- gate_up_proj: fold GEMV, then the selected-channel correction ----
             ks.record_event(ev_in)
-            ks.enqueue_function(k_gemv, wq_v[l * 4 + 2], wq_v[l * 4 + 2], sw_v[l * 4 + 2], t0b, hbf, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 4), block_dim=128)
+            if fast:
+                ks.enqueue_function(k_gemvf, wq32[l * 4 + 2], wq32[l * 4 + 2], sw_v[l * 4 + 2], t0b, hbf, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 4), block_dim=128)
+            else:
+                ks.enqueue_function(k_gemv, wq_v[l * 4 + 2], wq_v[l * 4 + 2], sw_v[l * 4 + 2], t0b, hbf, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 4), block_dim=128)
             if nsel_h > 0:
                 ctx.stream().enqueue_wait_for(ev_in)
                 ctx.enqueue_copy(dst_buf=xh_h, src_buf=hbf16)
@@ -619,7 +649,10 @@ def main() raises:
             ks.enqueue_function(k_swi, gu, act, actb, grid_dim=ceildiv(INTER, 256), block_dim=256)
             # ---- down_proj: fold GEMV, then the selected-channel correction ----
             ks.record_event(ev_in)
-            ks.enqueue_function(k_gemv, wq_v[l * 4 + 3], wq_v[l * 4 + 3], sw_v[l * 4 + 3], t0b, actb, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 4), block_dim=128)
+            if fast:
+                ks.enqueue_function(k_gemvf, wq32[l * 4 + 3], wq32[l * 4 + 3], sw_v[l * 4 + 3], t0b, actb, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 4), block_dim=128)
+            else:
+                ks.enqueue_function(k_gemv, wq_v[l * 4 + 3], wq_v[l * 4 + 3], sw_v[l * 4 + 3], t0b, actb, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 4), block_dim=128)
             if nsel_i > 0:
                 ctx.stream().enqueue_wait_for(ev_in)
                 ctx.enqueue_copy(dst_buf=xh_i, src_buf=actb16)
@@ -651,12 +684,21 @@ def main() raises:
                 bytes_total += cnt3 * (H // 2)
                 frac_sum += Float64(cnt3) / Float64(INTER)
             ks.enqueue_function(k_res, down, x, grid_dim=ceildiv(H, 256), block_dim=256)
-        ks.enqueue_function(k_norm, x, fnorm, hbf, grid_dim=1, block_dim=1)
-        ks.enqueue_function(k_lg, hbf, emb, lg, grid_dim=ceildiv(V, 256), block_dim=256)
+        if fast:
+            ks.enqueue_function(k_normf, x, fnorm, hbf, grid_dim=1, block_dim=256)
+        else:
+            ks.enqueue_function(k_norm, x, fnorm, hbf, grid_dim=1, block_dim=1)
+        if fast:
+            ks.enqueue_function(k_lgf, hbf, emb, lg, grid_dim=ceildiv(V, 4), block_dim=128)
+        else:
+            ks.enqueue_function(k_lg, hbf, emb, lg, grid_dim=ceildiv(V, 256), block_dim=256)
         var tv = DeviceBuffer[DType.int32](ctx, tgt.unsafe_ptr().unsafe_offset(pos), 1, owning=False)
         var lv = DeviceBuffer[DType.float32](ctx, loss.unsafe_ptr().unsafe_offset(pos), 1, owning=False)
         var t1v = DeviceBuffer[DType.int32](ctx, top1.unsafe_ptr().unsafe_offset(pos), 1, owning=False)
-        ks.enqueue_function(k_ce, lg, tv, lv, t1v, Int32(1), grid_dim=1, block_dim=1)
+        if fast:
+            ks.enqueue_function(k_cef, lg, tv, lv, t1v, Int32(1), grid_dim=1, block_dim=256)
+        else:
+            ks.enqueue_function(k_ce, lg, tv, lv, t1v, Int32(1), grid_dim=1, block_dim=1)
         ks.synchronize()
         ctx.synchronize()
         if (pos + 1) % 64 == 0:
