@@ -170,3 +170,54 @@ def gather_rows_d4[
     for w4 in range(Int(thread_idx.x), rw // 4, 128):
         var v = plugk.unsafe_offset(src + 4 * w4).load[width=4, alignment=16]()
         stage.unsafe_offset(dst + 4 * w4).store[alignment=16](v)
+
+# Split-over-channels correction: the selected channels are divided into KS contiguous chunks, one grid row each, so 8x more
+# blocks run than with one thread per output row walking every channel. Each chunk sums its channels in ascending order into
+# part[s * n + r]; combine_corr adds the KS partials in a fixed order and then the row of y. Deterministic, but a different
+# summation order from apply_corr_k (partial sums per chunk), so results are validated on the gate, not assumed identical.
+comptime KS = 8
+
+def apply_corr_ks[
+    ho: ImmOrigin, so: ImmOrigin, dt: ImmOrigin, xo: ImmOrigin, io: ImmOrigin, go: ImmOrigin, co: ImmOrigin, po: MutOrigin
+](
+    hole_k: ImmPointer[UInt8, ho],
+    scales_k: ImmPointer[Float32, so],
+    delta: ImmPointer[Float32, dt],
+    x: ImmPointer[BFloat16, xo],
+    idx: ImmPointer[Int32, io],
+    stage: ImmPointer[UInt8, go],
+    cnt: ImmPointer[Int32, co],
+    part: MutPointer[Float32, po],
+    n: Int32, kdim: Int32,
+):
+    var r = global_idx.x
+    if r >= Int(n):
+        return
+    var s = Int(block_idx.y)
+    var nn = Int(n)
+    var half = nn // 2
+    var cn = Int(cnt[unsafe_offset=0])
+    var chunk = (cn + KS - 1) // KS
+    var lo = s * chunk
+    var hi = lo + chunk
+    if hi > cn:
+        hi = cn
+    var acc = Float32(0)
+    for i in range(lo, hi):
+        var c = Int(idx[unsafe_offset=i])
+        var h = Int((hole_k[unsafe_offset=c * half + (r >> 1)] >> UInt8(4 * (r & 1))) & UInt8(15))
+        var pb = stage[unsafe_offset=i * half + (r >> 1)]
+        var p = Int((pb >> UInt8(4 * (r & 1))) & UInt8(15))
+        acc += (delta[unsafe_offset=h * 16 + p] * scales_k[unsafe_offset=(c >> 6) * nn + r]) * x[unsafe_offset=c].cast[DType.float32]()
+    part[unsafe_offset=s * nn + r] = acc
+
+def combine_corr[
+    po: ImmOrigin, yo: MutOrigin
+](part: ImmPointer[Float32, po], y: MutPointer[Float32, yo], n: Int32):
+    var r = global_idx.x
+    if r >= Int(n):
+        return
+    var acc = part[unsafe_offset=r]
+    for s in range(1, KS):
+        acc = acc + part[unsafe_offset=s * Int(n) + r]
+    y[unsafe_offset=r] = y[unsafe_offset=r] + acc

@@ -24,7 +24,7 @@ from p7_glint_linear import glint_gemv_warp
 from p7_glint_gemv_fast import glint_gemv_fast
 from p7_decode_fast_kernels import rms_norm_block, logits_warp, ce_argmax_block
 from p7_attention_split import attention_split_partial, attention_split_combine, NCH
-from p7_select_device import select_topk, gather_rows_d, apply_corr_d, apply_corr_k, transpose_scales, gather_rows_d4
+from p7_select_device import select_topk, gather_rows_d, apply_corr_d, apply_corr_k, transpose_scales, gather_rows_d4, apply_corr_ks, combine_corr, KS
 
 comptime CTX = 2048
 comptime NT = CTX - 1
@@ -219,6 +219,8 @@ def main() raises:
     var kmaj = False
     var vgat = False
     var roll = False
+    var stale = False
+    var ksplit = False
     var abl = 0
     if len(args) > 7:
         var mode = String(args[7])
@@ -228,6 +230,8 @@ def main() raises:
         kmaj = "kmaj" in mode
         vgat = "vgat" in mode
         roll = "roll" in mode
+        stale = "stale" in mode
+        ksplit = "ksplit" in mode
         # timing-only ablations of the device-selection path (results are NOT valid): abl1 = select only, abl2 = select + gather, abl3 = select + correction on stale staging
         if "abl1" in mode:
             abl = 1
@@ -552,6 +556,9 @@ def main() raises:
             var jj = i % 4
             hk_v.append(DeviceBuffer[DType.uint8](ctx, hk_u8[i].unsafe_ptr(), nout[jj] * kin[jj] // 2, owning=False))
             sk_v.append(DeviceBuffer[DType.float32](ctx, sk_f[i].unsafe_ptr(), nout[jj] * kin[jj] // 64, owning=False))
+    var k_corrks = ctx.compile_function[apply_corr_ks[ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
+    var k_comb = ctx.compile_function[combine_corr[ImmUntrackedOrigin, MutUntrackedOrigin]]()
+    var part_buf = ctx.enqueue_create_buffer[DType.float32](KS * 16384)
     var k_corrk = ctx.compile_function[apply_corr_k[ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
     var k_gatv = ctx.compile_function[gather_rows_d4[ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
     var k_gather = ctx.compile_function[gather_rows[ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
@@ -561,6 +568,42 @@ def main() raises:
     var k_corrd = ctx.compile_function[apply_corr_d[ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
     var cnt_dev = ctx.enqueue_create_buffer[DType.int32](1)
     var cnt_log = ctx.enqueue_create_buffer[DType.int32](steps * LAYERS * 4)
+    # Prefetch-timing control "stale": the channels fetched for token t are the ones selected on token t-1 (kept per linear, double
+    # buffered), so the plug rows for a whole token can be gathered on a second stream while the compute stream runs. The values
+    # multiplied are still the current token's activations. Needs dsel + kmaj.
+    if stale and not (dsel and kmaj):
+        raise Error("stale needs dsel and kmaj")
+    var stg_total = 0
+    var stg_off = List[Int]()
+    if stale:
+        for i in range(LAYERS * 4):
+            var jj = i % 4
+            stg_off.append(stg_total)
+            stg_total += kin[jj] * nout[jj] // 2
+    var stg_all = ctx.enqueue_create_buffer[DType.uint8](stg_total + 16)
+    var sel_idx_all = ctx.enqueue_create_buffer[DType.int32]((2 * LAYERS * 4 * 8192 if stale else 1) + 16)
+    var sel_cnt_all = ctx.enqueue_create_buffer[DType.int32]((2 * LAYERS * 4 if stale else 1) + 16)
+    var stg8 = List[DeviceBuffer[DType.uint8]]()
+    var stg32 = List[DeviceBuffer[DType.uint32]]()
+    var sidx = List[DeviceBuffer[DType.int32]]()
+    var scnt = List[DeviceBuffer[DType.int32]]()
+    var gs = ctx.create_stream()
+    var ev_pref = List[type_of(ev_gat)]()
+    var zero_h = ctx.enqueue_create_host_buffer[DType.int32](1)
+    zero_h[0] = 0
+    if stale:
+        for i in range(LAYERS * 4):
+            var jj = i % 4
+            stg8.append(DeviceBuffer[DType.uint8](ctx, stg_all.unsafe_ptr().unsafe_offset(stg_off[i]), kin[jj] * nout[jj] // 2, owning=False))
+            stg32.append(DeviceBuffer[DType.uint32](ctx, stg_all.unsafe_ptr().unsafe_offset(stg_off[i]).unsafe_bitcast[UInt32](), kin[jj] * nout[jj] // 8, owning=False))
+        for i in range(2 * LAYERS * 4):
+            sidx.append(DeviceBuffer[DType.int32](ctx, sel_idx_all.unsafe_ptr().unsafe_offset(i * 8192), 8192, owning=False))
+            scnt.append(DeviceBuffer[DType.int32](ctx, sel_cnt_all.unsafe_ptr().unsafe_offset(i), 1, owning=False))
+        for _ in range(LAYERS):
+            ev_pref.append(ctx.create_event())
+        for i in range(2 * LAYERS * 4):
+            ctx.enqueue_copy(dst_buf=scnt[i], src_buf=zero_h)
+        ctx.synchronize()
     var k_normf = ctx.compile_function[rms_norm_block[ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
     var k_lgf = ctx.compile_function[logits_warp[ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
     var k_cef = ctx.compile_function[ce_argmax_block[ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin, MutUntrackedOrigin]]()
@@ -586,7 +629,7 @@ def main() raises:
         ni.append((pl * INTER + 99) // 100)
     var bytes_total = 0
     var frac_sum = Float64(0)
-    print("MOJO_GLINT_SELECT_CONFIG fast", fast, "attn_split", attn_split, "dsel", dsel, "kmaj", kmaj, "vgat", vgat, "roll", roll, "abl", abl, "ends", ends, "endpct", endpct, "percent", pct, "fixed_n", fixed_n, "nsel_hidden", nsel_h, "nsel_inter", nsel_i)
+    print("MOJO_GLINT_SELECT_CONFIG fast", fast, "attn_split", attn_split, "dsel", dsel, "kmaj", kmaj, "vgat", vgat, "roll", roll, "stale", stale, "ksplit", ksplit, "abl", abl, "ends", ends, "endpct", endpct, "percent", pct, "fixed_n", fixed_n, "nsel_hidden", nsel_h, "nsel_inter", nsel_i)
     print("MOJO_GLINT_SELECT_DECODE_BEGIN", steps)
     var t0 = perf_counter_ns()
     var gen = List[Int]()
@@ -613,7 +656,20 @@ def main() raises:
         ctx.enqueue_function(k_embed, emb, tokd, x, grid_dim=ceildiv(H, 256), block_dim=256)
         ctx.stream().record_event(emb_done)
         ks.enqueue_wait_for(emb_done)
+        var par = pos % 2
+        if stale:
+            if q == 0:
+                for i in range(LAYERS * 4):
+                    ctx.enqueue_copy(dst_buf=scnt[(1 - par) * 128 + i], src_buf=zero_h)
+                ctx.synchronize()
+            for l in range(LAYERS):
+                for j in range(4):
+                    var jj = l * 4 + j
+                    gs.enqueue_function(k_gatv, plugk_w[jj], sidx[(1 - par) * 128 + jj], scnt[(1 - par) * 128 + jj], stg32[jj], Int32(nout[j] // 8), grid_dim=kin[j], block_dim=128)
+                gs.record_event(ev_pref[l])
         for l in range(LAYERS):
+            if stale:
+                ks.enqueue_wait_for(ev_pref[l])
             if fast:
                 ks.enqueue_function(k_normf, x, innorm_v[l], hbf, grid_dim=1, block_dim=256)
             else:
@@ -624,7 +680,14 @@ def main() raises:
                 ks.enqueue_function(k_gemvf, wq32[l * 4 + 0], wq32[l * 4 + 0], sw_v[l * 4 + 0], t0b, hbf, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 4), block_dim=128)
             else:
                 ks.enqueue_function(k_gemv, wq_v[l * 4 + 0], wq_v[l * 4 + 0], sw_v[l * 4 + 0], t0b, hbf, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 4), block_dim=128)
-            if dsel and nh[l] > 0:
+            if stale and nh[l] > 0:
+                ks.enqueue_function(k_sel, hbf16, sidx[par * 128 + l * 4 + 0], scnt[par * 128 + l * 4 + 0], cnt_log, Int32((pos * LAYERS + l) * 4 + 0), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
+                if ksplit:
+                    ks.enqueue_function(k_corrks, hk_v[l * 4 + 0], sk_v[l * 4 + 0], dltb, hbf, sidx[(1 - par) * 128 + l * 4 + 0], stg8[l * 4 + 0], scnt[(1 - par) * 128 + l * 4 + 0], part_buf, Int32(QKV), Int32(H), grid_dim=(ceildiv(QKV, 128), KS), block_dim=128)
+                    ks.enqueue_function(k_comb, part_buf, qkv, Int32(QKV), grid_dim=ceildiv(QKV, 128), block_dim=128)
+                else:
+                    ks.enqueue_function(k_corrk, hk_v[l * 4 + 0], sk_v[l * 4 + 0], dltb, hbf, sidx[(1 - par) * 128 + l * 4 + 0], stg8[l * 4 + 0], scnt[(1 - par) * 128 + l * 4 + 0], qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 128), block_dim=128)
+            elif dsel and nh[l] > 0:
                 ctx.stream().enqueue_wait_for(ev_in)
                 ctx.enqueue_function(k_sel, hbf16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 0), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
                 if abl == 0 or abl == 2:
@@ -636,7 +699,11 @@ def main() raises:
                 ks.enqueue_wait_for(ev_gat)
                 if abl == 0 or abl == 3:
                     if kmaj:
-                        ks.enqueue_function(k_corrk, hk_v[l * 4 + 0], sk_v[l * 4 + 0], dltb, hbf, idx_dev, stage_u8, cnt_dev, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 128), block_dim=128)
+                        if ksplit:
+                            ks.enqueue_function(k_corrks, hk_v[l * 4 + 0], sk_v[l * 4 + 0], dltb, hbf, idx_dev, stage_u8, cnt_dev, part_buf, Int32(QKV), Int32(H), grid_dim=(ceildiv(QKV, 128), KS), block_dim=128)
+                            ks.enqueue_function(k_comb, part_buf, qkv, Int32(QKV), grid_dim=ceildiv(QKV, 128), block_dim=128)
+                        else:
+                            ks.enqueue_function(k_corrk, hk_v[l * 4 + 0], sk_v[l * 4 + 0], dltb, hbf, idx_dev, stage_u8, cnt_dev, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 128), block_dim=128)
                     else:
                         ks.enqueue_function(k_corrd, wq_v[l * 4 + 0], sw_v[l * 4 + 0], dltb, hbf, idx_dev, stage_u8, cnt_dev, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 128), block_dim=128)
             elif nsel_h > 0:
@@ -682,7 +749,14 @@ def main() raises:
                 ks.enqueue_function(k_gemvf, wq32[l * 4 + 1], wq32[l * 4 + 1], sw_v[l * 4 + 1], t0b, attnb, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 4), block_dim=128)
             else:
                 ks.enqueue_function(k_gemv, wq_v[l * 4 + 1], wq_v[l * 4 + 1], sw_v[l * 4 + 1], t0b, attnb, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 4), block_dim=128)
-            if dsel and nh[l] > 0:
+            if stale and nh[l] > 0:
+                ks.enqueue_function(k_sel, attnb16, sidx[par * 128 + l * 4 + 1], scnt[par * 128 + l * 4 + 1], cnt_log, Int32((pos * LAYERS + l) * 4 + 1), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
+                if ksplit:
+                    ks.enqueue_function(k_corrks, hk_v[l * 4 + 1], sk_v[l * 4 + 1], dltb, attnb, sidx[(1 - par) * 128 + l * 4 + 1], stg8[l * 4 + 1], scnt[(1 - par) * 128 + l * 4 + 1], part_buf, Int32(H), Int32(H), grid_dim=(ceildiv(H, 128), KS), block_dim=128)
+                    ks.enqueue_function(k_comb, part_buf, proj, Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
+                else:
+                    ks.enqueue_function(k_corrk, hk_v[l * 4 + 1], sk_v[l * 4 + 1], dltb, attnb, sidx[(1 - par) * 128 + l * 4 + 1], stg8[l * 4 + 1], scnt[(1 - par) * 128 + l * 4 + 1], proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
+            elif dsel and nh[l] > 0:
                 ctx.stream().enqueue_wait_for(ev_in)
                 ctx.enqueue_function(k_sel, attnb16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 1), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
                 if abl == 0 or abl == 2:
@@ -694,7 +768,11 @@ def main() raises:
                 ks.enqueue_wait_for(ev_gat)
                 if abl == 0 or abl == 3:
                     if kmaj:
-                        ks.enqueue_function(k_corrk, hk_v[l * 4 + 1], sk_v[l * 4 + 1], dltb, attnb, idx_dev, stage_u8, cnt_dev, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
+                        if ksplit:
+                            ks.enqueue_function(k_corrks, hk_v[l * 4 + 1], sk_v[l * 4 + 1], dltb, attnb, idx_dev, stage_u8, cnt_dev, part_buf, Int32(H), Int32(H), grid_dim=(ceildiv(H, 128), KS), block_dim=128)
+                            ks.enqueue_function(k_comb, part_buf, proj, Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
+                        else:
+                            ks.enqueue_function(k_corrk, hk_v[l * 4 + 1], sk_v[l * 4 + 1], dltb, attnb, idx_dev, stage_u8, cnt_dev, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
                     else:
                         ks.enqueue_function(k_corrd, wq_v[l * 4 + 1], sw_v[l * 4 + 1], dltb, attnb, idx_dev, stage_u8, cnt_dev, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
             elif nsel_h > 0:
@@ -738,7 +816,14 @@ def main() raises:
                 ks.enqueue_function(k_gemvf, wq32[l * 4 + 2], wq32[l * 4 + 2], sw_v[l * 4 + 2], t0b, hbf, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 4), block_dim=128)
             else:
                 ks.enqueue_function(k_gemv, wq_v[l * 4 + 2], wq_v[l * 4 + 2], sw_v[l * 4 + 2], t0b, hbf, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 4), block_dim=128)
-            if dsel and nh[l] > 0:
+            if stale and nh[l] > 0:
+                ks.enqueue_function(k_sel, hbf16, sidx[par * 128 + l * 4 + 2], scnt[par * 128 + l * 4 + 2], cnt_log, Int32((pos * LAYERS + l) * 4 + 2), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
+                if ksplit:
+                    ks.enqueue_function(k_corrks, hk_v[l * 4 + 2], sk_v[l * 4 + 2], dltb, hbf, sidx[(1 - par) * 128 + l * 4 + 2], stg8[l * 4 + 2], scnt[(1 - par) * 128 + l * 4 + 2], part_buf, Int32(2 * INTER), Int32(H), grid_dim=(ceildiv(2 * INTER, 128), KS), block_dim=128)
+                    ks.enqueue_function(k_comb, part_buf, gu, Int32(2 * INTER), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
+                else:
+                    ks.enqueue_function(k_corrk, hk_v[l * 4 + 2], sk_v[l * 4 + 2], dltb, hbf, sidx[(1 - par) * 128 + l * 4 + 2], stg8[l * 4 + 2], scnt[(1 - par) * 128 + l * 4 + 2], gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
+            elif dsel and nh[l] > 0:
                 ctx.stream().enqueue_wait_for(ev_in)
                 ctx.enqueue_function(k_sel, hbf16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 2), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
                 if abl == 0 or abl == 2:
@@ -750,7 +835,11 @@ def main() raises:
                 ks.enqueue_wait_for(ev_gat)
                 if abl == 0 or abl == 3:
                     if kmaj:
-                        ks.enqueue_function(k_corrk, hk_v[l * 4 + 2], sk_v[l * 4 + 2], dltb, hbf, idx_dev, stage_u8, cnt_dev, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
+                        if ksplit:
+                            ks.enqueue_function(k_corrks, hk_v[l * 4 + 2], sk_v[l * 4 + 2], dltb, hbf, idx_dev, stage_u8, cnt_dev, part_buf, Int32(2 * INTER), Int32(H), grid_dim=(ceildiv(2 * INTER, 128), KS), block_dim=128)
+                            ks.enqueue_function(k_comb, part_buf, gu, Int32(2 * INTER), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
+                        else:
+                            ks.enqueue_function(k_corrk, hk_v[l * 4 + 2], sk_v[l * 4 + 2], dltb, hbf, idx_dev, stage_u8, cnt_dev, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
                     else:
                         ks.enqueue_function(k_corrd, wq_v[l * 4 + 2], sw_v[l * 4 + 2], dltb, hbf, idx_dev, stage_u8, cnt_dev, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
             elif nsel_h > 0:
@@ -790,7 +879,14 @@ def main() raises:
                 ks.enqueue_function(k_gemvf, wq32[l * 4 + 3], wq32[l * 4 + 3], sw_v[l * 4 + 3], t0b, actb, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 4), block_dim=128)
             else:
                 ks.enqueue_function(k_gemv, wq_v[l * 4 + 3], wq_v[l * 4 + 3], sw_v[l * 4 + 3], t0b, actb, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 4), block_dim=128)
-            if dsel and ni[l] > 0:
+            if stale and ni[l] > 0:
+                ks.enqueue_function(k_sel, actb16, sidx[par * 128 + l * 4 + 3], scnt[par * 128 + l * 4 + 3], cnt_log, Int32((pos * LAYERS + l) * 4 + 3), Int32(INTER), Int32(ni[l]), grid_dim=1, block_dim=1024)
+                if ksplit:
+                    ks.enqueue_function(k_corrks, hk_v[l * 4 + 3], sk_v[l * 4 + 3], dltb, actb, sidx[(1 - par) * 128 + l * 4 + 3], stg8[l * 4 + 3], scnt[(1 - par) * 128 + l * 4 + 3], part_buf, Int32(H), Int32(INTER), grid_dim=(ceildiv(H, 128), KS), block_dim=128)
+                    ks.enqueue_function(k_comb, part_buf, down, Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
+                else:
+                    ks.enqueue_function(k_corrk, hk_v[l * 4 + 3], sk_v[l * 4 + 3], dltb, actb, sidx[(1 - par) * 128 + l * 4 + 3], stg8[l * 4 + 3], scnt[(1 - par) * 128 + l * 4 + 3], down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 128), block_dim=128)
+            elif dsel and ni[l] > 0:
                 ctx.stream().enqueue_wait_for(ev_in)
                 ctx.enqueue_function(k_sel, actb16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 3), Int32(INTER), Int32(ni[l]), grid_dim=1, block_dim=1024)
                 if abl == 0 or abl == 2:
@@ -802,7 +898,11 @@ def main() raises:
                 ks.enqueue_wait_for(ev_gat)
                 if abl == 0 or abl == 3:
                     if kmaj:
-                        ks.enqueue_function(k_corrk, hk_v[l * 4 + 3], sk_v[l * 4 + 3], dltb, actb, idx_dev, stage_u8, cnt_dev, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 128), block_dim=128)
+                        if ksplit:
+                            ks.enqueue_function(k_corrks, hk_v[l * 4 + 3], sk_v[l * 4 + 3], dltb, actb, idx_dev, stage_u8, cnt_dev, part_buf, Int32(H), Int32(INTER), grid_dim=(ceildiv(H, 128), KS), block_dim=128)
+                            ks.enqueue_function(k_comb, part_buf, down, Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
+                        else:
+                            ks.enqueue_function(k_corrk, hk_v[l * 4 + 3], sk_v[l * 4 + 3], dltb, actb, idx_dev, stage_u8, cnt_dev, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 128), block_dim=128)
                     else:
                         ks.enqueue_function(k_corrd, wq_v[l * 4 + 3], sw_v[l * 4 + 3], dltb, actb, idx_dev, stage_u8, cnt_dev, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 128), block_dim=128)
             elif nsel_i > 0:
@@ -909,4 +1009,7 @@ def main() raises:
     _ = kvk.unsafe_ptr()
     _ = kvv.unsafe_ptr()
     _ = table_u8.unsafe_ptr()
-    _ = len(in_norm) + len(post_norm) + len(lq) + len(plugk_host) + len(plugk_w) + len(ls) + len(hk_u8) + len(sk_f)
+    _ = len(in_norm) + len(post_norm) + len(lq) + len(plugk_host) + len(plugk_w) + len(ls) + len(hk_u8) + len(sk_f) + len(stg8) + len(stg32) + len(sidx) + len(scnt) + len(ev_pref)
+    _ = stg_all.unsafe_ptr()
+    _ = sel_idx_all.unsafe_ptr()
+    _ = sel_cnt_all.unsafe_ptr()

@@ -194,3 +194,21 @@ New control: layers [0, ends) and [32 - ends, 32) select `endpct` percent of inp
 | uniform 50 | none | 27.92 | 92.7% | 10/12 | 4.7 | 807 | yes |
 
 No per-layer policy tracks. The only arm at >= 10 tok/s (5% base, 4 end layers at 100%) reaches 58.1%. Agreement is not monotone in the bytes moved (5% base with 6 end layers at 50% scores 78.9%, with 8 layers 58.6% and with 10 layers 60.2%), which is consistent with the roughly 8 points of run-to-run numerical noise the spec records; differences among arms below the tracking bar are not resolved by one run each. M6 is not met on Mojo by any arm measured: tracking arms are below 10 tok/s and the 10 tok/s arms do not track.
+
+### Prefetch-timing control (`stale`) and split correction (`ksplit`), 2026-11-14
+
+**Prefetch timing (#117 independent control).** `stale`: the channels fetched for token t are the ones selected on token t-1, kept per linear in double-buffered device lists, so the plug rows of a whole token are gathered on a second stream while the compute stream runs (the values multiplied are still token t's activations; the first token of each prompt applies no correction). Free-running rollout, Amendment 3 protocol, reference = full-plug arm:
+
+| arm | prefix | agreement | tok/s | MB/token |
+|---|---|---|---|---|
+| current-token selection, 10% | 13.08 | 54.2% | 14.5 | 163 |
+| **stale** 10% | 10.75 | 41.7% | 11.5 | 163 |
+| **stale** 25% | 13.25 | 50.5% | 6.5 | 404 |
+| **stale** 50% | 15.92 | 56.8% | 3.8 | 807 |
+| current-token selection, 50% | 27.92 | 92.7% | 4.7 | 807 |
+
+Previous-token selection does not track at any fraction (the same direction as the CUDA result, #92: stale 51.0% / 71.6%), and it is not faster: at 10% the overlapped run takes 88.4 ms/token against 89.5 for current-token selection (teacher-forced, 128 steps; 103/128 vs 112/128 correct), so at that fraction the transfer was not the limiting cost. The early-fetch control exists and is measured; it is a negative.
+
+**Split correction.** The selected-channel correction ran one thread per output row, each walking every selected channel serially (40-128 blocks). `ksplit` divides the selected channels into 8 chunks, one grid row each (more blocks), sums each chunk in ascending channel order and adds the 8 partials in a fixed order. Deterministic, different summation order. 2047-position gate, act 10%: 95.55% (1956/2047), PPL 5.4982, **14.14 tok/s** (70.7 ms/token) versus 12.1 tok/s without it; per-position agreement with the non-split arm 98.53% (noise floor 98.4-98.6%). At 50% (128 steps, timing only) 252.7 -> 198.9 ms/token (3.96 -> 5.03 tok/s). The correction was not the only cost: fold 33, select 6 and the gather remain, and at 50% the 807 MB gather alone is at least 72 ms at the measured link rate.
+
+M6 is still not met on Mojo: the arms that track (50%) run at about 5 tok/s and the arms above 10 tok/s do not track.
