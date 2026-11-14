@@ -227,6 +227,7 @@ def main() raises:
             pct2 = pct2 * 10 + Int(b) - 48
     var ksplit = False
     var prof = False
+    var skel = False
     var abl = 0
     if len(args) > 7:
         var mode = String(args[7])
@@ -240,6 +241,9 @@ def main() raises:
         tier = "tier" in mode
         ksplit = "ksplit" in mode
         prof = "prof" in mode
+        skel = "skel" in mode
+        if skel:
+            stale = True
         # timing-only ablations of the device-selection path (results are NOT valid): abl1 = select only, abl2 = select + gather, abl3 = select + correction on stale staging
         if "abl1" in mode:
             abl = 1
@@ -633,6 +637,8 @@ def main() raises:
     var scnt = List[DeviceBuffer[DType.int32]]()
     var gs = ctx.create_stream()
     var ev_pref = List[type_of(ev_gat)]()
+    var ev_sel = List[type_of(ev_gat)]()
+    var ev_ph = ctx.create_event()
     var zero_h = ctx.enqueue_create_host_buffer[DType.int32](1)
     zero_h[0] = 0
     if stale:
@@ -645,6 +651,8 @@ def main() raises:
             scnt.append(DeviceBuffer[DType.int32](ctx, sel_cnt_all.unsafe_ptr().unsafe_offset(i), 1, owning=False))
         for _ in range(LAYERS):
             ev_pref.append(ctx.create_event())
+        for _ in range(LAYERS * 4):
+            ev_sel.append(ctx.create_event())
         for i in range(2 * LAYERS * 4):
             ctx.enqueue_copy(dst_buf=scnt[i], src_buf=zero_h)
         ctx.synchronize()
@@ -701,321 +709,354 @@ def main() raises:
         ctx.enqueue_copy(dst_buf=tokd, src_buf=tokh)
         var cv = DeviceBuffer[DType.float32](ctx, ct.unsafe_ptr().unsafe_offset(q * (ROT // 2)), ROT // 2, owning=False)
         var sv = DeviceBuffer[DType.float32](ctx, st.unsafe_ptr().unsafe_offset(q * (ROT // 2)), ROT // 2, owning=False)
-        ctx.enqueue_function(k_embed, emb, tokd, x, grid_dim=ceildiv(H, 256), block_dim=256)
-        ctx.stream().record_event(emb_done)
-        ks.enqueue_wait_for(emb_done)
-        var par = pos % 2
-        if stale:
-            if q == 0:
-                for i in range(LAYERS * 4):
-                    ctx.enqueue_copy(dst_buf=scnt[(1 - par) * 128 + i], src_buf=zero_h)
-                ctx.synchronize()
+        for phase in range(2 if skel else 1):
+            if skel and phase == 1:
+                ctx.stream().enqueue_wait_for(ev_ph)
+            ctx.enqueue_function(k_embed, emb, tokd, x, grid_dim=ceildiv(H, 256), block_dim=256)
+            ctx.stream().record_event(emb_done)
+            ks.enqueue_wait_for(emb_done)
+            var par = pos % 2
+            var rd = par if skel else 1 - par
+            if stale and not skel:
+                if q == 0:
+                    for i in range(LAYERS * 4):
+                        ctx.enqueue_copy(dst_buf=scnt[(1 - par) * 128 + i], src_buf=zero_h)
+                    ctx.synchronize()
+                for l in range(LAYERS):
+                    for j in range(4):
+                        var jj = l * 4 + j
+                        gs.enqueue_function(k_gatv, plugk_w[jj], sidx[(1 - par) * 128 + jj], scnt[(1 - par) * 128 + jj], stg32[jj], Int32(nout[j] // 8), grid_dim=kin[j], block_dim=128)
+                    gs.record_event(ev_pref[l])
             for l in range(LAYERS):
-                for j in range(4):
-                    var jj = l * 4 + j
-                    gs.enqueue_function(k_gatv, plugk_w[jj], sidx[(1 - par) * 128 + jj], scnt[(1 - par) * 128 + jj], stg32[jj], Int32(nout[j] // 8), grid_dim=kin[j], block_dim=128)
-                gs.record_event(ev_pref[l])
-        for l in range(LAYERS):
-            if stale:
-                ks.enqueue_wait_for(ev_pref[l])
-            if fast:
-                ks.enqueue_function(k_normf, x, innorm_v[l], hbf, grid_dim=1, block_dim=256)
-            else:
-                ks.enqueue_function(k_norm, x, innorm_v[l], hbf, grid_dim=1, block_dim=1)
-            # ---- qkv_proj: fold GEMV, then the selected-channel correction ----
-            ks.record_event(ev_in)
-            if fast:
-                ks.enqueue_function(k_gemvf, wq32[l * 4 + 0], wq32[l * 4 + 0], sw_v[l * 4 + 0], t0b, hbf, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 4), block_dim=128)
-            else:
-                ks.enqueue_function(k_gemv, wq_v[l * 4 + 0], wq_v[l * 4 + 0], sw_v[l * 4 + 0], t0b, hbf, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 4), block_dim=128)
-            if stale and nh[l] > 0:
-                ks.enqueue_function(k_sel, hbf16, sidx[par * 128 + l * 4 + 0], scnt[par * 128 + l * 4 + 0], cnt_log, Int32((pos * LAYERS + l) * 4 + 0), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
-                if ksplit:
-                    ks.enqueue_function(k_corrks, hk_v[l * 4 + 0], sk_v[l * 4 + 0], dltb, hbf, sidx[(1 - par) * 128 + l * 4 + 0], stg8[l * 4 + 0], scnt[(1 - par) * 128 + l * 4 + 0], part_buf, Int32(QKV), Int32(H), grid_dim=(ceildiv(QKV, 128), KS), block_dim=128)
-                    ks.enqueue_function(k_comb, part_buf, qkv, Int32(QKV), grid_dim=ceildiv(QKV, 128), block_dim=128)
+                if skel and phase == 0 and l > 0:
+                    gs.record_event(ev_pref[l - 1])
+                if stale and not (skel and phase == 0):
+                    ks.enqueue_wait_for(ev_pref[l])
+                if fast:
+                    ks.enqueue_function(k_normf, x, innorm_v[l], hbf, grid_dim=1, block_dim=256)
                 else:
-                    ks.enqueue_function(k_corrk, hk_v[l * 4 + 0], sk_v[l * 4 + 0], dltb, hbf, sidx[(1 - par) * 128 + l * 4 + 0], stg8[l * 4 + 0], scnt[(1 - par) * 128 + l * 4 + 0], qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 128), block_dim=128)
-            elif dsel and nh[l] > 0:
-                ctx.stream().enqueue_wait_for(ev_in)
-                ctx.enqueue_function(k_sel, hbf16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 0), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
-                if prof:
-                    ctx.enqueue_function(k_acc, idx_dev, cnt_dev, hist_d, Int32((((1 if pi >= 6 else 0) * LAYERS + l) * 4 + 0) * INTER), grid_dim=1, block_dim=128)
-                if abl == 0 or abl == 2:
-                    if vgat:
-                        ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 0], idx_dev, cnt_dev, stage_w, Int32(QKV // 8), grid_dim=H, block_dim=128)
+                    ks.enqueue_function(k_norm, x, innorm_v[l], hbf, grid_dim=1, block_dim=1)
+                # ---- qkv_proj: fold GEMV, then the selected-channel correction ----
+                ks.record_event(ev_in)
+                if fast:
+                    ks.enqueue_function(k_gemvf, wq32[l * 4 + 0], wq32[l * 4 + 0], sw_v[l * 4 + 0], t0b, hbf, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 4), block_dim=128)
+                else:
+                    ks.enqueue_function(k_gemv, wq_v[l * 4 + 0], wq_v[l * 4 + 0], sw_v[l * 4 + 0], t0b, hbf, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 4), block_dim=128)
+                if stale and nh[l] > 0:
+                    if (not skel) or phase == 0:
+                        ks.enqueue_function(k_sel, hbf16, sidx[par * 128 + l * 4 + 0], scnt[par * 128 + l * 4 + 0], cnt_log, Int32((pos * LAYERS + l) * 4 + 0), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
+                    if skel and phase == 0:
+                        ks.record_event(ev_sel[l * 4 + 0])
+                        gs.enqueue_wait_for(ev_sel[l * 4 + 0])
+                        gs.enqueue_function(k_gatv, plugk_w[l * 4 + 0], sidx[par * 128 + l * 4 + 0], scnt[par * 128 + l * 4 + 0], stg32[l * 4 + 0], Int32(nout[0] // 8), grid_dim=kin[0], block_dim=128)
                     else:
-                        ctx.enqueue_function(k_gatd, plugk_w[l * 4 + 0], idx_dev, cnt_dev, stage_w, Int32(QKV // 8), grid_dim=H, block_dim=128)
-                ctx.stream().record_event(ev_gat)
-                ks.enqueue_wait_for(ev_gat)
-                if abl == 0 or abl == 3:
-                    if kmaj:
                         if ksplit:
-                            ks.enqueue_function(k_corrks, hk_v[l * 4 + 0], sk_v[l * 4 + 0], dltb, hbf, idx_dev, stage_u8, cnt_dev, part_buf, Int32(QKV), Int32(H), grid_dim=(ceildiv(QKV, 128), KS), block_dim=128)
+                            ks.enqueue_function(k_corrks, hk_v[l * 4 + 0], sk_v[l * 4 + 0], dltb, hbf, sidx[rd * 128 + l * 4 + 0], stg8[l * 4 + 0], scnt[rd * 128 + l * 4 + 0], part_buf, Int32(QKV), Int32(H), grid_dim=(ceildiv(QKV, 128), KS), block_dim=128)
                             ks.enqueue_function(k_comb, part_buf, qkv, Int32(QKV), grid_dim=ceildiv(QKV, 128), block_dim=128)
                         else:
-                            ks.enqueue_function(k_corrk, hk_v[l * 4 + 0], sk_v[l * 4 + 0], dltb, hbf, idx_dev, stage_u8, cnt_dev, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 128), block_dim=128)
-                    else:
-                        ks.enqueue_function(k_corrd, wq_v[l * 4 + 0], sw_v[l * 4 + 0], dltb, hbf, idx_dev, stage_u8, cnt_dev, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 128), block_dim=128)
-                if tier and nh1[l] > 0:
-                    ctx.enqueue_function(k_sel, hbf16, idx_b, cnt_b, dummy_log, Int32(0), Int32(H), Int32(nh1[l]), grid_dim=1, block_dim=1024)
-                    ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 0], idx_b, cnt_b, stage_b32, Int32(QKV // 8), grid_dim=H, block_dim=128)
-                    ctx.stream().record_event(ev_gat2)
-                    ks.enqueue_wait_for(ev_gat2)
-                    ks.enqueue_function(k_corrk, hk_v[l * 4 + 0], sk_v[l * 4 + 0], dltD, hbf, idx_b, stage_b8, cnt_b, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 128), block_dim=128)
-            elif nsel_h > 0:
-                ctx.stream().enqueue_wait_for(ev_in)
-                ctx.enqueue_copy(dst_buf=xh_h, src_buf=hbf16)
-                ctx.synchronize()
-                for bk in range(32768):
-                    hist[bk] = 0
-                for c in range(H):
-                    var key = Int(xh_h[c]) & 32767
-                    hist[key] = hist[key] + 1
-                var cum0 = 0
-                var thr0 = 0
-                var t0 = 32767
-                while t0 >= 0:
-                    cum0 += Int(hist[t0])
-                    if cum0 >= nsel_h:
-                        thr0 = t0
-                        break
-                    t0 -= 1
-                var cnt0 = 0
-                for c in range(H):
-                    if (Int(xh_h[c]) & 32767) >= thr0:
-                        idxh[cnt0] = Int32(c)
-                        cnt0 += 1
-                ctx.enqueue_copy(dst_buf=idx_dev, src_buf=idxh)
-                ctx.enqueue_function(k_gather, plugk_w[l * 4 + 0], idx_dev, stage_w, Int32(cnt0), Int32(QKV // 8), grid_dim=ceildiv(cnt0 * (QKV // 8), 256), block_dim=256)
-                ctx.stream().record_event(ev_gat)
-                ks.enqueue_wait_for(ev_gat)
-                ks.enqueue_function(k_corr, wq_v[l * 4 + 0], sw_v[l * 4 + 0], dltb, hbf, idx_dev, stage_u8, qkv, Int32(cnt0), Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 128), block_dim=128)
-                bytes_total += cnt0 * (QKV // 2)
-                frac_sum += Float64(cnt0) / Float64(H)
-            ks.enqueue_function(k_rope, qkv, cv, sv, rp, grid_dim=ceildiv(QKV, 256), block_dim=256)
-            ks.enqueue_function(k_kv, rp, kv_k[l], kv_v[l], Int32(q), grid_dim=ceildiv(NKV * HD, 256), block_dim=256)
-            if attn_split:
-                ks.enqueue_function(k_attp, rp, kv_k[l], kv_v[l], att_pm, att_pd, att_pa, Int32(q), grid_dim=(NCH, NQ), block_dim=128)
-                ks.enqueue_function(k_attc, att_pm, att_pd, att_pa, attn, attnb, grid_dim=NQ, block_dim=HD)
-            else:
-                ks.enqueue_function(k_attn, rp, kv_k[l], kv_v[l], attn, attnb, Int32(q), grid_dim=(1, NQ), block_dim=HD)
-            # ---- o_proj: fold GEMV, then the selected-channel correction ----
-            ks.record_event(ev_in)
-            if fast:
-                ks.enqueue_function(k_gemvf, wq32[l * 4 + 1], wq32[l * 4 + 1], sw_v[l * 4 + 1], t0b, attnb, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 4), block_dim=128)
-            else:
-                ks.enqueue_function(k_gemv, wq_v[l * 4 + 1], wq_v[l * 4 + 1], sw_v[l * 4 + 1], t0b, attnb, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 4), block_dim=128)
-            if stale and nh[l] > 0:
-                ks.enqueue_function(k_sel, attnb16, sidx[par * 128 + l * 4 + 1], scnt[par * 128 + l * 4 + 1], cnt_log, Int32((pos * LAYERS + l) * 4 + 1), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
-                if ksplit:
-                    ks.enqueue_function(k_corrks, hk_v[l * 4 + 1], sk_v[l * 4 + 1], dltb, attnb, sidx[(1 - par) * 128 + l * 4 + 1], stg8[l * 4 + 1], scnt[(1 - par) * 128 + l * 4 + 1], part_buf, Int32(H), Int32(H), grid_dim=(ceildiv(H, 128), KS), block_dim=128)
-                    ks.enqueue_function(k_comb, part_buf, proj, Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
+                            ks.enqueue_function(k_corrk, hk_v[l * 4 + 0], sk_v[l * 4 + 0], dltb, hbf, sidx[rd * 128 + l * 4 + 0], stg8[l * 4 + 0], scnt[rd * 128 + l * 4 + 0], qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 128), block_dim=128)
+                elif dsel and nh[l] > 0:
+                    ctx.stream().enqueue_wait_for(ev_in)
+                    ctx.enqueue_function(k_sel, hbf16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 0), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
+                    if prof:
+                        ctx.enqueue_function(k_acc, idx_dev, cnt_dev, hist_d, Int32((((1 if pi >= 6 else 0) * LAYERS + l) * 4 + 0) * INTER), grid_dim=1, block_dim=128)
+                    if abl == 0 or abl == 2:
+                        if vgat:
+                            ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 0], idx_dev, cnt_dev, stage_w, Int32(QKV // 8), grid_dim=H, block_dim=128)
+                        else:
+                            ctx.enqueue_function(k_gatd, plugk_w[l * 4 + 0], idx_dev, cnt_dev, stage_w, Int32(QKV // 8), grid_dim=H, block_dim=128)
+                    ctx.stream().record_event(ev_gat)
+                    ks.enqueue_wait_for(ev_gat)
+                    if abl == 0 or abl == 3:
+                        if kmaj:
+                            if ksplit:
+                                ks.enqueue_function(k_corrks, hk_v[l * 4 + 0], sk_v[l * 4 + 0], dltb, hbf, idx_dev, stage_u8, cnt_dev, part_buf, Int32(QKV), Int32(H), grid_dim=(ceildiv(QKV, 128), KS), block_dim=128)
+                                ks.enqueue_function(k_comb, part_buf, qkv, Int32(QKV), grid_dim=ceildiv(QKV, 128), block_dim=128)
+                            else:
+                                ks.enqueue_function(k_corrk, hk_v[l * 4 + 0], sk_v[l * 4 + 0], dltb, hbf, idx_dev, stage_u8, cnt_dev, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 128), block_dim=128)
+                        else:
+                            ks.enqueue_function(k_corrd, wq_v[l * 4 + 0], sw_v[l * 4 + 0], dltb, hbf, idx_dev, stage_u8, cnt_dev, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 128), block_dim=128)
+                    if tier and nh1[l] > 0:
+                        ctx.enqueue_function(k_sel, hbf16, idx_b, cnt_b, dummy_log, Int32(0), Int32(H), Int32(nh1[l]), grid_dim=1, block_dim=1024)
+                        ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 0], idx_b, cnt_b, stage_b32, Int32(QKV // 8), grid_dim=H, block_dim=128)
+                        ctx.stream().record_event(ev_gat2)
+                        ks.enqueue_wait_for(ev_gat2)
+                        ks.enqueue_function(k_corrk, hk_v[l * 4 + 0], sk_v[l * 4 + 0], dltD, hbf, idx_b, stage_b8, cnt_b, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 128), block_dim=128)
+                elif nsel_h > 0:
+                    ctx.stream().enqueue_wait_for(ev_in)
+                    ctx.enqueue_copy(dst_buf=xh_h, src_buf=hbf16)
+                    ctx.synchronize()
+                    for bk in range(32768):
+                        hist[bk] = 0
+                    for c in range(H):
+                        var key = Int(xh_h[c]) & 32767
+                        hist[key] = hist[key] + 1
+                    var cum0 = 0
+                    var thr0 = 0
+                    var t0 = 32767
+                    while t0 >= 0:
+                        cum0 += Int(hist[t0])
+                        if cum0 >= nsel_h:
+                            thr0 = t0
+                            break
+                        t0 -= 1
+                    var cnt0 = 0
+                    for c in range(H):
+                        if (Int(xh_h[c]) & 32767) >= thr0:
+                            idxh[cnt0] = Int32(c)
+                            cnt0 += 1
+                    ctx.enqueue_copy(dst_buf=idx_dev, src_buf=idxh)
+                    ctx.enqueue_function(k_gather, plugk_w[l * 4 + 0], idx_dev, stage_w, Int32(cnt0), Int32(QKV // 8), grid_dim=ceildiv(cnt0 * (QKV // 8), 256), block_dim=256)
+                    ctx.stream().record_event(ev_gat)
+                    ks.enqueue_wait_for(ev_gat)
+                    ks.enqueue_function(k_corr, wq_v[l * 4 + 0], sw_v[l * 4 + 0], dltb, hbf, idx_dev, stage_u8, qkv, Int32(cnt0), Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 128), block_dim=128)
+                    bytes_total += cnt0 * (QKV // 2)
+                    frac_sum += Float64(cnt0) / Float64(H)
+                ks.enqueue_function(k_rope, qkv, cv, sv, rp, grid_dim=ceildiv(QKV, 256), block_dim=256)
+                ks.enqueue_function(k_kv, rp, kv_k[l], kv_v[l], Int32(q), grid_dim=ceildiv(NKV * HD, 256), block_dim=256)
+                if attn_split:
+                    ks.enqueue_function(k_attp, rp, kv_k[l], kv_v[l], att_pm, att_pd, att_pa, Int32(q), grid_dim=(NCH, NQ), block_dim=128)
+                    ks.enqueue_function(k_attc, att_pm, att_pd, att_pa, attn, attnb, grid_dim=NQ, block_dim=HD)
                 else:
-                    ks.enqueue_function(k_corrk, hk_v[l * 4 + 1], sk_v[l * 4 + 1], dltb, attnb, sidx[(1 - par) * 128 + l * 4 + 1], stg8[l * 4 + 1], scnt[(1 - par) * 128 + l * 4 + 1], proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
-            elif dsel and nh[l] > 0:
-                ctx.stream().enqueue_wait_for(ev_in)
-                ctx.enqueue_function(k_sel, attnb16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 1), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
-                if prof:
-                    ctx.enqueue_function(k_acc, idx_dev, cnt_dev, hist_d, Int32((((1 if pi >= 6 else 0) * LAYERS + l) * 4 + 1) * INTER), grid_dim=1, block_dim=128)
-                if abl == 0 or abl == 2:
-                    if vgat:
-                        ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 1], idx_dev, cnt_dev, stage_w, Int32(H // 8), grid_dim=H, block_dim=128)
+                    ks.enqueue_function(k_attn, rp, kv_k[l], kv_v[l], attn, attnb, Int32(q), grid_dim=(1, NQ), block_dim=HD)
+                # ---- o_proj: fold GEMV, then the selected-channel correction ----
+                ks.record_event(ev_in)
+                if fast:
+                    ks.enqueue_function(k_gemvf, wq32[l * 4 + 1], wq32[l * 4 + 1], sw_v[l * 4 + 1], t0b, attnb, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 4), block_dim=128)
+                else:
+                    ks.enqueue_function(k_gemv, wq_v[l * 4 + 1], wq_v[l * 4 + 1], sw_v[l * 4 + 1], t0b, attnb, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 4), block_dim=128)
+                if stale and nh[l] > 0:
+                    if (not skel) or phase == 0:
+                        ks.enqueue_function(k_sel, attnb16, sidx[par * 128 + l * 4 + 1], scnt[par * 128 + l * 4 + 1], cnt_log, Int32((pos * LAYERS + l) * 4 + 1), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
+                    if skel and phase == 0:
+                        ks.record_event(ev_sel[l * 4 + 1])
+                        gs.enqueue_wait_for(ev_sel[l * 4 + 1])
+                        gs.enqueue_function(k_gatv, plugk_w[l * 4 + 1], sidx[par * 128 + l * 4 + 1], scnt[par * 128 + l * 4 + 1], stg32[l * 4 + 1], Int32(nout[1] // 8), grid_dim=kin[1], block_dim=128)
                     else:
-                        ctx.enqueue_function(k_gatd, plugk_w[l * 4 + 1], idx_dev, cnt_dev, stage_w, Int32(H // 8), grid_dim=H, block_dim=128)
-                ctx.stream().record_event(ev_gat)
-                ks.enqueue_wait_for(ev_gat)
-                if abl == 0 or abl == 3:
-                    if kmaj:
                         if ksplit:
-                            ks.enqueue_function(k_corrks, hk_v[l * 4 + 1], sk_v[l * 4 + 1], dltb, attnb, idx_dev, stage_u8, cnt_dev, part_buf, Int32(H), Int32(H), grid_dim=(ceildiv(H, 128), KS), block_dim=128)
+                            ks.enqueue_function(k_corrks, hk_v[l * 4 + 1], sk_v[l * 4 + 1], dltb, attnb, sidx[rd * 128 + l * 4 + 1], stg8[l * 4 + 1], scnt[rd * 128 + l * 4 + 1], part_buf, Int32(H), Int32(H), grid_dim=(ceildiv(H, 128), KS), block_dim=128)
                             ks.enqueue_function(k_comb, part_buf, proj, Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
                         else:
-                            ks.enqueue_function(k_corrk, hk_v[l * 4 + 1], sk_v[l * 4 + 1], dltb, attnb, idx_dev, stage_u8, cnt_dev, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
-                    else:
-                        ks.enqueue_function(k_corrd, wq_v[l * 4 + 1], sw_v[l * 4 + 1], dltb, attnb, idx_dev, stage_u8, cnt_dev, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
-                if tier and nh1[l] > 0:
-                    ctx.enqueue_function(k_sel, attnb16, idx_b, cnt_b, dummy_log, Int32(0), Int32(H), Int32(nh1[l]), grid_dim=1, block_dim=1024)
-                    ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 1], idx_b, cnt_b, stage_b32, Int32(H // 8), grid_dim=H, block_dim=128)
-                    ctx.stream().record_event(ev_gat2)
-                    ks.enqueue_wait_for(ev_gat2)
-                    ks.enqueue_function(k_corrk, hk_v[l * 4 + 1], sk_v[l * 4 + 1], dltD, attnb, idx_b, stage_b8, cnt_b, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
-            elif nsel_h > 0:
-                ctx.stream().enqueue_wait_for(ev_in)
-                ctx.enqueue_copy(dst_buf=xh_h, src_buf=attnb16)
-                ctx.synchronize()
-                for bk in range(32768):
-                    hist[bk] = 0
-                for c in range(H):
-                    var key = Int(xh_h[c]) & 32767
-                    hist[key] = hist[key] + 1
-                var cum1 = 0
-                var thr1 = 0
-                var t1 = 32767
-                while t1 >= 0:
-                    cum1 += Int(hist[t1])
-                    if cum1 >= nsel_h:
-                        thr1 = t1
-                        break
-                    t1 -= 1
-                var cnt1 = 0
-                for c in range(H):
-                    if (Int(xh_h[c]) & 32767) >= thr1:
-                        idxh[cnt1] = Int32(c)
-                        cnt1 += 1
-                ctx.enqueue_copy(dst_buf=idx_dev, src_buf=idxh)
-                ctx.enqueue_function(k_gather, plugk_w[l * 4 + 1], idx_dev, stage_w, Int32(cnt1), Int32(H // 8), grid_dim=ceildiv(cnt1 * (H // 8), 256), block_dim=256)
-                ctx.stream().record_event(ev_gat)
-                ks.enqueue_wait_for(ev_gat)
-                ks.enqueue_function(k_corr, wq_v[l * 4 + 1], sw_v[l * 4 + 1], dltb, attnb, idx_dev, stage_u8, proj, Int32(cnt1), Int32(H), Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
-                bytes_total += cnt1 * (H // 2)
-                frac_sum += Float64(cnt1) / Float64(H)
-            ks.enqueue_function(k_res, proj, x, grid_dim=ceildiv(H, 256), block_dim=256)
-            if fast:
-                ks.enqueue_function(k_normf, x, postnorm_v[l], hbf, grid_dim=1, block_dim=256)
-            else:
-                ks.enqueue_function(k_norm, x, postnorm_v[l], hbf, grid_dim=1, block_dim=1)
-            # ---- gate_up_proj: fold GEMV, then the selected-channel correction ----
-            ks.record_event(ev_in)
-            if fast:
-                ks.enqueue_function(k_gemvf, wq32[l * 4 + 2], wq32[l * 4 + 2], sw_v[l * 4 + 2], t0b, hbf, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 4), block_dim=128)
-            else:
-                ks.enqueue_function(k_gemv, wq_v[l * 4 + 2], wq_v[l * 4 + 2], sw_v[l * 4 + 2], t0b, hbf, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 4), block_dim=128)
-            if stale and nh[l] > 0:
-                ks.enqueue_function(k_sel, hbf16, sidx[par * 128 + l * 4 + 2], scnt[par * 128 + l * 4 + 2], cnt_log, Int32((pos * LAYERS + l) * 4 + 2), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
-                if ksplit:
-                    ks.enqueue_function(k_corrks, hk_v[l * 4 + 2], sk_v[l * 4 + 2], dltb, hbf, sidx[(1 - par) * 128 + l * 4 + 2], stg8[l * 4 + 2], scnt[(1 - par) * 128 + l * 4 + 2], part_buf, Int32(2 * INTER), Int32(H), grid_dim=(ceildiv(2 * INTER, 128), KS), block_dim=128)
-                    ks.enqueue_function(k_comb, part_buf, gu, Int32(2 * INTER), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
+                            ks.enqueue_function(k_corrk, hk_v[l * 4 + 1], sk_v[l * 4 + 1], dltb, attnb, sidx[rd * 128 + l * 4 + 1], stg8[l * 4 + 1], scnt[rd * 128 + l * 4 + 1], proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
+                elif dsel and nh[l] > 0:
+                    ctx.stream().enqueue_wait_for(ev_in)
+                    ctx.enqueue_function(k_sel, attnb16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 1), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
+                    if prof:
+                        ctx.enqueue_function(k_acc, idx_dev, cnt_dev, hist_d, Int32((((1 if pi >= 6 else 0) * LAYERS + l) * 4 + 1) * INTER), grid_dim=1, block_dim=128)
+                    if abl == 0 or abl == 2:
+                        if vgat:
+                            ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 1], idx_dev, cnt_dev, stage_w, Int32(H // 8), grid_dim=H, block_dim=128)
+                        else:
+                            ctx.enqueue_function(k_gatd, plugk_w[l * 4 + 1], idx_dev, cnt_dev, stage_w, Int32(H // 8), grid_dim=H, block_dim=128)
+                    ctx.stream().record_event(ev_gat)
+                    ks.enqueue_wait_for(ev_gat)
+                    if abl == 0 or abl == 3:
+                        if kmaj:
+                            if ksplit:
+                                ks.enqueue_function(k_corrks, hk_v[l * 4 + 1], sk_v[l * 4 + 1], dltb, attnb, idx_dev, stage_u8, cnt_dev, part_buf, Int32(H), Int32(H), grid_dim=(ceildiv(H, 128), KS), block_dim=128)
+                                ks.enqueue_function(k_comb, part_buf, proj, Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
+                            else:
+                                ks.enqueue_function(k_corrk, hk_v[l * 4 + 1], sk_v[l * 4 + 1], dltb, attnb, idx_dev, stage_u8, cnt_dev, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
+                        else:
+                            ks.enqueue_function(k_corrd, wq_v[l * 4 + 1], sw_v[l * 4 + 1], dltb, attnb, idx_dev, stage_u8, cnt_dev, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
+                    if tier and nh1[l] > 0:
+                        ctx.enqueue_function(k_sel, attnb16, idx_b, cnt_b, dummy_log, Int32(0), Int32(H), Int32(nh1[l]), grid_dim=1, block_dim=1024)
+                        ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 1], idx_b, cnt_b, stage_b32, Int32(H // 8), grid_dim=H, block_dim=128)
+                        ctx.stream().record_event(ev_gat2)
+                        ks.enqueue_wait_for(ev_gat2)
+                        ks.enqueue_function(k_corrk, hk_v[l * 4 + 1], sk_v[l * 4 + 1], dltD, attnb, idx_b, stage_b8, cnt_b, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
+                elif nsel_h > 0:
+                    ctx.stream().enqueue_wait_for(ev_in)
+                    ctx.enqueue_copy(dst_buf=xh_h, src_buf=attnb16)
+                    ctx.synchronize()
+                    for bk in range(32768):
+                        hist[bk] = 0
+                    for c in range(H):
+                        var key = Int(xh_h[c]) & 32767
+                        hist[key] = hist[key] + 1
+                    var cum1 = 0
+                    var thr1 = 0
+                    var t1 = 32767
+                    while t1 >= 0:
+                        cum1 += Int(hist[t1])
+                        if cum1 >= nsel_h:
+                            thr1 = t1
+                            break
+                        t1 -= 1
+                    var cnt1 = 0
+                    for c in range(H):
+                        if (Int(xh_h[c]) & 32767) >= thr1:
+                            idxh[cnt1] = Int32(c)
+                            cnt1 += 1
+                    ctx.enqueue_copy(dst_buf=idx_dev, src_buf=idxh)
+                    ctx.enqueue_function(k_gather, plugk_w[l * 4 + 1], idx_dev, stage_w, Int32(cnt1), Int32(H // 8), grid_dim=ceildiv(cnt1 * (H // 8), 256), block_dim=256)
+                    ctx.stream().record_event(ev_gat)
+                    ks.enqueue_wait_for(ev_gat)
+                    ks.enqueue_function(k_corr, wq_v[l * 4 + 1], sw_v[l * 4 + 1], dltb, attnb, idx_dev, stage_u8, proj, Int32(cnt1), Int32(H), Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
+                    bytes_total += cnt1 * (H // 2)
+                    frac_sum += Float64(cnt1) / Float64(H)
+                ks.enqueue_function(k_res, proj, x, grid_dim=ceildiv(H, 256), block_dim=256)
+                if fast:
+                    ks.enqueue_function(k_normf, x, postnorm_v[l], hbf, grid_dim=1, block_dim=256)
                 else:
-                    ks.enqueue_function(k_corrk, hk_v[l * 4 + 2], sk_v[l * 4 + 2], dltb, hbf, sidx[(1 - par) * 128 + l * 4 + 2], stg8[l * 4 + 2], scnt[(1 - par) * 128 + l * 4 + 2], gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
-            elif dsel and nh[l] > 0:
-                ctx.stream().enqueue_wait_for(ev_in)
-                ctx.enqueue_function(k_sel, hbf16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 2), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
-                if prof:
-                    ctx.enqueue_function(k_acc, idx_dev, cnt_dev, hist_d, Int32((((1 if pi >= 6 else 0) * LAYERS + l) * 4 + 2) * INTER), grid_dim=1, block_dim=128)
-                if abl == 0 or abl == 2:
-                    if vgat:
-                        ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 2], idx_dev, cnt_dev, stage_w, Int32(2 * INTER // 8), grid_dim=H, block_dim=128)
+                    ks.enqueue_function(k_norm, x, postnorm_v[l], hbf, grid_dim=1, block_dim=1)
+                # ---- gate_up_proj: fold GEMV, then the selected-channel correction ----
+                ks.record_event(ev_in)
+                if fast:
+                    ks.enqueue_function(k_gemvf, wq32[l * 4 + 2], wq32[l * 4 + 2], sw_v[l * 4 + 2], t0b, hbf, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 4), block_dim=128)
+                else:
+                    ks.enqueue_function(k_gemv, wq_v[l * 4 + 2], wq_v[l * 4 + 2], sw_v[l * 4 + 2], t0b, hbf, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 4), block_dim=128)
+                if stale and nh[l] > 0:
+                    if (not skel) or phase == 0:
+                        ks.enqueue_function(k_sel, hbf16, sidx[par * 128 + l * 4 + 2], scnt[par * 128 + l * 4 + 2], cnt_log, Int32((pos * LAYERS + l) * 4 + 2), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
+                    if skel and phase == 0:
+                        ks.record_event(ev_sel[l * 4 + 2])
+                        gs.enqueue_wait_for(ev_sel[l * 4 + 2])
+                        gs.enqueue_function(k_gatv, plugk_w[l * 4 + 2], sidx[par * 128 + l * 4 + 2], scnt[par * 128 + l * 4 + 2], stg32[l * 4 + 2], Int32(nout[2] // 8), grid_dim=kin[2], block_dim=128)
                     else:
-                        ctx.enqueue_function(k_gatd, plugk_w[l * 4 + 2], idx_dev, cnt_dev, stage_w, Int32(2 * INTER // 8), grid_dim=H, block_dim=128)
-                ctx.stream().record_event(ev_gat)
-                ks.enqueue_wait_for(ev_gat)
-                if abl == 0 or abl == 3:
-                    if kmaj:
                         if ksplit:
-                            ks.enqueue_function(k_corrks, hk_v[l * 4 + 2], sk_v[l * 4 + 2], dltb, hbf, idx_dev, stage_u8, cnt_dev, part_buf, Int32(2 * INTER), Int32(H), grid_dim=(ceildiv(2 * INTER, 128), KS), block_dim=128)
+                            ks.enqueue_function(k_corrks, hk_v[l * 4 + 2], sk_v[l * 4 + 2], dltb, hbf, sidx[rd * 128 + l * 4 + 2], stg8[l * 4 + 2], scnt[rd * 128 + l * 4 + 2], part_buf, Int32(2 * INTER), Int32(H), grid_dim=(ceildiv(2 * INTER, 128), KS), block_dim=128)
                             ks.enqueue_function(k_comb, part_buf, gu, Int32(2 * INTER), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
                         else:
-                            ks.enqueue_function(k_corrk, hk_v[l * 4 + 2], sk_v[l * 4 + 2], dltb, hbf, idx_dev, stage_u8, cnt_dev, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
-                    else:
-                        ks.enqueue_function(k_corrd, wq_v[l * 4 + 2], sw_v[l * 4 + 2], dltb, hbf, idx_dev, stage_u8, cnt_dev, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
-                if tier and nh1[l] > 0:
-                    ctx.enqueue_function(k_sel, hbf16, idx_b, cnt_b, dummy_log, Int32(0), Int32(H), Int32(nh1[l]), grid_dim=1, block_dim=1024)
-                    ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 2], idx_b, cnt_b, stage_b32, Int32(2 * INTER // 8), grid_dim=H, block_dim=128)
-                    ctx.stream().record_event(ev_gat2)
-                    ks.enqueue_wait_for(ev_gat2)
-                    ks.enqueue_function(k_corrk, hk_v[l * 4 + 2], sk_v[l * 4 + 2], dltD, hbf, idx_b, stage_b8, cnt_b, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
-            elif nsel_h > 0:
-                ctx.stream().enqueue_wait_for(ev_in)
-                ctx.enqueue_copy(dst_buf=xh_h, src_buf=hbf16)
-                ctx.synchronize()
-                for bk in range(32768):
-                    hist[bk] = 0
-                for c in range(H):
-                    var key = Int(xh_h[c]) & 32767
-                    hist[key] = hist[key] + 1
-                var cum2 = 0
-                var thr2 = 0
-                var t2 = 32767
-                while t2 >= 0:
-                    cum2 += Int(hist[t2])
-                    if cum2 >= nsel_h:
-                        thr2 = t2
-                        break
-                    t2 -= 1
-                var cnt2 = 0
-                for c in range(H):
-                    if (Int(xh_h[c]) & 32767) >= thr2:
-                        idxh[cnt2] = Int32(c)
-                        cnt2 += 1
-                ctx.enqueue_copy(dst_buf=idx_dev, src_buf=idxh)
-                ctx.enqueue_function(k_gather, plugk_w[l * 4 + 2], idx_dev, stage_w, Int32(cnt2), Int32(2 * INTER // 8), grid_dim=ceildiv(cnt2 * (2 * INTER // 8), 256), block_dim=256)
-                ctx.stream().record_event(ev_gat)
-                ks.enqueue_wait_for(ev_gat)
-                ks.enqueue_function(k_corr, wq_v[l * 4 + 2], sw_v[l * 4 + 2], dltb, hbf, idx_dev, stage_u8, gu, Int32(cnt2), Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
-                bytes_total += cnt2 * (2 * INTER // 2)
-                frac_sum += Float64(cnt2) / Float64(H)
-            ks.enqueue_function(k_swi, gu, act, actb, grid_dim=ceildiv(INTER, 256), block_dim=256)
-            # ---- down_proj: fold GEMV, then the selected-channel correction ----
-            ks.record_event(ev_in)
-            if fast:
-                ks.enqueue_function(k_gemvf, wq32[l * 4 + 3], wq32[l * 4 + 3], sw_v[l * 4 + 3], t0b, actb, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 4), block_dim=128)
-            else:
-                ks.enqueue_function(k_gemv, wq_v[l * 4 + 3], wq_v[l * 4 + 3], sw_v[l * 4 + 3], t0b, actb, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 4), block_dim=128)
-            if stale and ni[l] > 0:
-                ks.enqueue_function(k_sel, actb16, sidx[par * 128 + l * 4 + 3], scnt[par * 128 + l * 4 + 3], cnt_log, Int32((pos * LAYERS + l) * 4 + 3), Int32(INTER), Int32(ni[l]), grid_dim=1, block_dim=1024)
-                if ksplit:
-                    ks.enqueue_function(k_corrks, hk_v[l * 4 + 3], sk_v[l * 4 + 3], dltb, actb, sidx[(1 - par) * 128 + l * 4 + 3], stg8[l * 4 + 3], scnt[(1 - par) * 128 + l * 4 + 3], part_buf, Int32(H), Int32(INTER), grid_dim=(ceildiv(H, 128), KS), block_dim=128)
-                    ks.enqueue_function(k_comb, part_buf, down, Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
+                            ks.enqueue_function(k_corrk, hk_v[l * 4 + 2], sk_v[l * 4 + 2], dltb, hbf, sidx[rd * 128 + l * 4 + 2], stg8[l * 4 + 2], scnt[rd * 128 + l * 4 + 2], gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
+                elif dsel and nh[l] > 0:
+                    ctx.stream().enqueue_wait_for(ev_in)
+                    ctx.enqueue_function(k_sel, hbf16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 2), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
+                    if prof:
+                        ctx.enqueue_function(k_acc, idx_dev, cnt_dev, hist_d, Int32((((1 if pi >= 6 else 0) * LAYERS + l) * 4 + 2) * INTER), grid_dim=1, block_dim=128)
+                    if abl == 0 or abl == 2:
+                        if vgat:
+                            ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 2], idx_dev, cnt_dev, stage_w, Int32(2 * INTER // 8), grid_dim=H, block_dim=128)
+                        else:
+                            ctx.enqueue_function(k_gatd, plugk_w[l * 4 + 2], idx_dev, cnt_dev, stage_w, Int32(2 * INTER // 8), grid_dim=H, block_dim=128)
+                    ctx.stream().record_event(ev_gat)
+                    ks.enqueue_wait_for(ev_gat)
+                    if abl == 0 or abl == 3:
+                        if kmaj:
+                            if ksplit:
+                                ks.enqueue_function(k_corrks, hk_v[l * 4 + 2], sk_v[l * 4 + 2], dltb, hbf, idx_dev, stage_u8, cnt_dev, part_buf, Int32(2 * INTER), Int32(H), grid_dim=(ceildiv(2 * INTER, 128), KS), block_dim=128)
+                                ks.enqueue_function(k_comb, part_buf, gu, Int32(2 * INTER), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
+                            else:
+                                ks.enqueue_function(k_corrk, hk_v[l * 4 + 2], sk_v[l * 4 + 2], dltb, hbf, idx_dev, stage_u8, cnt_dev, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
+                        else:
+                            ks.enqueue_function(k_corrd, wq_v[l * 4 + 2], sw_v[l * 4 + 2], dltb, hbf, idx_dev, stage_u8, cnt_dev, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
+                    if tier and nh1[l] > 0:
+                        ctx.enqueue_function(k_sel, hbf16, idx_b, cnt_b, dummy_log, Int32(0), Int32(H), Int32(nh1[l]), grid_dim=1, block_dim=1024)
+                        ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 2], idx_b, cnt_b, stage_b32, Int32(2 * INTER // 8), grid_dim=H, block_dim=128)
+                        ctx.stream().record_event(ev_gat2)
+                        ks.enqueue_wait_for(ev_gat2)
+                        ks.enqueue_function(k_corrk, hk_v[l * 4 + 2], sk_v[l * 4 + 2], dltD, hbf, idx_b, stage_b8, cnt_b, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
+                elif nsel_h > 0:
+                    ctx.stream().enqueue_wait_for(ev_in)
+                    ctx.enqueue_copy(dst_buf=xh_h, src_buf=hbf16)
+                    ctx.synchronize()
+                    for bk in range(32768):
+                        hist[bk] = 0
+                    for c in range(H):
+                        var key = Int(xh_h[c]) & 32767
+                        hist[key] = hist[key] + 1
+                    var cum2 = 0
+                    var thr2 = 0
+                    var t2 = 32767
+                    while t2 >= 0:
+                        cum2 += Int(hist[t2])
+                        if cum2 >= nsel_h:
+                            thr2 = t2
+                            break
+                        t2 -= 1
+                    var cnt2 = 0
+                    for c in range(H):
+                        if (Int(xh_h[c]) & 32767) >= thr2:
+                            idxh[cnt2] = Int32(c)
+                            cnt2 += 1
+                    ctx.enqueue_copy(dst_buf=idx_dev, src_buf=idxh)
+                    ctx.enqueue_function(k_gather, plugk_w[l * 4 + 2], idx_dev, stage_w, Int32(cnt2), Int32(2 * INTER // 8), grid_dim=ceildiv(cnt2 * (2 * INTER // 8), 256), block_dim=256)
+                    ctx.stream().record_event(ev_gat)
+                    ks.enqueue_wait_for(ev_gat)
+                    ks.enqueue_function(k_corr, wq_v[l * 4 + 2], sw_v[l * 4 + 2], dltb, hbf, idx_dev, stage_u8, gu, Int32(cnt2), Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
+                    bytes_total += cnt2 * (2 * INTER // 2)
+                    frac_sum += Float64(cnt2) / Float64(H)
+                ks.enqueue_function(k_swi, gu, act, actb, grid_dim=ceildiv(INTER, 256), block_dim=256)
+                # ---- down_proj: fold GEMV, then the selected-channel correction ----
+                ks.record_event(ev_in)
+                if fast:
+                    ks.enqueue_function(k_gemvf, wq32[l * 4 + 3], wq32[l * 4 + 3], sw_v[l * 4 + 3], t0b, actb, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 4), block_dim=128)
                 else:
-                    ks.enqueue_function(k_corrk, hk_v[l * 4 + 3], sk_v[l * 4 + 3], dltb, actb, sidx[(1 - par) * 128 + l * 4 + 3], stg8[l * 4 + 3], scnt[(1 - par) * 128 + l * 4 + 3], down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 128), block_dim=128)
-            elif dsel and ni[l] > 0:
-                ctx.stream().enqueue_wait_for(ev_in)
-                ctx.enqueue_function(k_sel, actb16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 3), Int32(INTER), Int32(ni[l]), grid_dim=1, block_dim=1024)
-                if prof:
-                    ctx.enqueue_function(k_acc, idx_dev, cnt_dev, hist_d, Int32((((1 if pi >= 6 else 0) * LAYERS + l) * 4 + 3) * INTER), grid_dim=1, block_dim=128)
-                if abl == 0 or abl == 2:
-                    if vgat:
-                        ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 3], idx_dev, cnt_dev, stage_w, Int32(H // 8), grid_dim=INTER, block_dim=128)
+                    ks.enqueue_function(k_gemv, wq_v[l * 4 + 3], wq_v[l * 4 + 3], sw_v[l * 4 + 3], t0b, actb, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 4), block_dim=128)
+                if stale and ni[l] > 0:
+                    if (not skel) or phase == 0:
+                        ks.enqueue_function(k_sel, actb16, sidx[par * 128 + l * 4 + 3], scnt[par * 128 + l * 4 + 3], cnt_log, Int32((pos * LAYERS + l) * 4 + 3), Int32(INTER), Int32(ni[l]), grid_dim=1, block_dim=1024)
+                    if skel and phase == 0:
+                        ks.record_event(ev_sel[l * 4 + 3])
+                        gs.enqueue_wait_for(ev_sel[l * 4 + 3])
+                        gs.enqueue_function(k_gatv, plugk_w[l * 4 + 3], sidx[par * 128 + l * 4 + 3], scnt[par * 128 + l * 4 + 3], stg32[l * 4 + 3], Int32(nout[3] // 8), grid_dim=kin[3], block_dim=128)
                     else:
-                        ctx.enqueue_function(k_gatd, plugk_w[l * 4 + 3], idx_dev, cnt_dev, stage_w, Int32(H // 8), grid_dim=INTER, block_dim=128)
-                ctx.stream().record_event(ev_gat)
-                ks.enqueue_wait_for(ev_gat)
-                if abl == 0 or abl == 3:
-                    if kmaj:
                         if ksplit:
-                            ks.enqueue_function(k_corrks, hk_v[l * 4 + 3], sk_v[l * 4 + 3], dltb, actb, idx_dev, stage_u8, cnt_dev, part_buf, Int32(H), Int32(INTER), grid_dim=(ceildiv(H, 128), KS), block_dim=128)
+                            ks.enqueue_function(k_corrks, hk_v[l * 4 + 3], sk_v[l * 4 + 3], dltb, actb, sidx[rd * 128 + l * 4 + 3], stg8[l * 4 + 3], scnt[rd * 128 + l * 4 + 3], part_buf, Int32(H), Int32(INTER), grid_dim=(ceildiv(H, 128), KS), block_dim=128)
                             ks.enqueue_function(k_comb, part_buf, down, Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
                         else:
-                            ks.enqueue_function(k_corrk, hk_v[l * 4 + 3], sk_v[l * 4 + 3], dltb, actb, idx_dev, stage_u8, cnt_dev, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 128), block_dim=128)
-                    else:
-                        ks.enqueue_function(k_corrd, wq_v[l * 4 + 3], sw_v[l * 4 + 3], dltb, actb, idx_dev, stage_u8, cnt_dev, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 128), block_dim=128)
-                if tier and ni1[l] > 0:
-                    ctx.enqueue_function(k_sel, actb16, idx_b, cnt_b, dummy_log, Int32(0), Int32(INTER), Int32(ni1[l]), grid_dim=1, block_dim=1024)
-                    ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 3], idx_b, cnt_b, stage_b32, Int32(H // 8), grid_dim=INTER, block_dim=128)
-                    ctx.stream().record_event(ev_gat2)
-                    ks.enqueue_wait_for(ev_gat2)
-                    ks.enqueue_function(k_corrk, hk_v[l * 4 + 3], sk_v[l * 4 + 3], dltD, actb, idx_b, stage_b8, cnt_b, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 128), block_dim=128)
-            elif nsel_i > 0:
-                ctx.stream().enqueue_wait_for(ev_in)
-                ctx.enqueue_copy(dst_buf=xh_i, src_buf=actb16)
-                ctx.synchronize()
-                for bk in range(32768):
-                    hist[bk] = 0
-                for c in range(INTER):
-                    var key = Int(xh_i[c]) & 32767
-                    hist[key] = hist[key] + 1
-                var cum3 = 0
-                var thr3 = 0
-                var t3 = 32767
-                while t3 >= 0:
-                    cum3 += Int(hist[t3])
-                    if cum3 >= nsel_i:
-                        thr3 = t3
-                        break
-                    t3 -= 1
-                var cnt3 = 0
-                for c in range(INTER):
-                    if (Int(xh_i[c]) & 32767) >= thr3:
-                        idxh[cnt3] = Int32(c)
-                        cnt3 += 1
-                ctx.enqueue_copy(dst_buf=idx_dev, src_buf=idxh)
-                ctx.enqueue_function(k_gather, plugk_w[l * 4 + 3], idx_dev, stage_w, Int32(cnt3), Int32(H // 8), grid_dim=ceildiv(cnt3 * (H // 8), 256), block_dim=256)
-                ctx.stream().record_event(ev_gat)
-                ks.enqueue_wait_for(ev_gat)
-                ks.enqueue_function(k_corr, wq_v[l * 4 + 3], sw_v[l * 4 + 3], dltb, actb, idx_dev, stage_u8, down, Int32(cnt3), Int32(H), Int32(INTER), grid_dim=ceildiv(H, 128), block_dim=128)
-                bytes_total += cnt3 * (H // 2)
-                frac_sum += Float64(cnt3) / Float64(INTER)
-            ks.enqueue_function(k_res, down, x, grid_dim=ceildiv(H, 256), block_dim=256)
+                            ks.enqueue_function(k_corrk, hk_v[l * 4 + 3], sk_v[l * 4 + 3], dltb, actb, sidx[rd * 128 + l * 4 + 3], stg8[l * 4 + 3], scnt[rd * 128 + l * 4 + 3], down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 128), block_dim=128)
+                elif dsel and ni[l] > 0:
+                    ctx.stream().enqueue_wait_for(ev_in)
+                    ctx.enqueue_function(k_sel, actb16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 3), Int32(INTER), Int32(ni[l]), grid_dim=1, block_dim=1024)
+                    if prof:
+                        ctx.enqueue_function(k_acc, idx_dev, cnt_dev, hist_d, Int32((((1 if pi >= 6 else 0) * LAYERS + l) * 4 + 3) * INTER), grid_dim=1, block_dim=128)
+                    if abl == 0 or abl == 2:
+                        if vgat:
+                            ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 3], idx_dev, cnt_dev, stage_w, Int32(H // 8), grid_dim=INTER, block_dim=128)
+                        else:
+                            ctx.enqueue_function(k_gatd, plugk_w[l * 4 + 3], idx_dev, cnt_dev, stage_w, Int32(H // 8), grid_dim=INTER, block_dim=128)
+                    ctx.stream().record_event(ev_gat)
+                    ks.enqueue_wait_for(ev_gat)
+                    if abl == 0 or abl == 3:
+                        if kmaj:
+                            if ksplit:
+                                ks.enqueue_function(k_corrks, hk_v[l * 4 + 3], sk_v[l * 4 + 3], dltb, actb, idx_dev, stage_u8, cnt_dev, part_buf, Int32(H), Int32(INTER), grid_dim=(ceildiv(H, 128), KS), block_dim=128)
+                                ks.enqueue_function(k_comb, part_buf, down, Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
+                            else:
+                                ks.enqueue_function(k_corrk, hk_v[l * 4 + 3], sk_v[l * 4 + 3], dltb, actb, idx_dev, stage_u8, cnt_dev, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 128), block_dim=128)
+                        else:
+                            ks.enqueue_function(k_corrd, wq_v[l * 4 + 3], sw_v[l * 4 + 3], dltb, actb, idx_dev, stage_u8, cnt_dev, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 128), block_dim=128)
+                    if tier and ni1[l] > 0:
+                        ctx.enqueue_function(k_sel, actb16, idx_b, cnt_b, dummy_log, Int32(0), Int32(INTER), Int32(ni1[l]), grid_dim=1, block_dim=1024)
+                        ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 3], idx_b, cnt_b, stage_b32, Int32(H // 8), grid_dim=INTER, block_dim=128)
+                        ctx.stream().record_event(ev_gat2)
+                        ks.enqueue_wait_for(ev_gat2)
+                        ks.enqueue_function(k_corrk, hk_v[l * 4 + 3], sk_v[l * 4 + 3], dltD, actb, idx_b, stage_b8, cnt_b, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 128), block_dim=128)
+                elif nsel_i > 0:
+                    ctx.stream().enqueue_wait_for(ev_in)
+                    ctx.enqueue_copy(dst_buf=xh_i, src_buf=actb16)
+                    ctx.synchronize()
+                    for bk in range(32768):
+                        hist[bk] = 0
+                    for c in range(INTER):
+                        var key = Int(xh_i[c]) & 32767
+                        hist[key] = hist[key] + 1
+                    var cum3 = 0
+                    var thr3 = 0
+                    var t3 = 32767
+                    while t3 >= 0:
+                        cum3 += Int(hist[t3])
+                        if cum3 >= nsel_i:
+                            thr3 = t3
+                            break
+                        t3 -= 1
+                    var cnt3 = 0
+                    for c in range(INTER):
+                        if (Int(xh_i[c]) & 32767) >= thr3:
+                            idxh[cnt3] = Int32(c)
+                            cnt3 += 1
+                    ctx.enqueue_copy(dst_buf=idx_dev, src_buf=idxh)
+                    ctx.enqueue_function(k_gather, plugk_w[l * 4 + 3], idx_dev, stage_w, Int32(cnt3), Int32(H // 8), grid_dim=ceildiv(cnt3 * (H // 8), 256), block_dim=256)
+                    ctx.stream().record_event(ev_gat)
+                    ks.enqueue_wait_for(ev_gat)
+                    ks.enqueue_function(k_corr, wq_v[l * 4 + 3], sw_v[l * 4 + 3], dltb, actb, idx_dev, stage_u8, down, Int32(cnt3), Int32(H), Int32(INTER), grid_dim=ceildiv(H, 128), block_dim=128)
+                    bytes_total += cnt3 * (H // 2)
+                    frac_sum += Float64(cnt3) / Float64(INTER)
+                ks.enqueue_function(k_res, down, x, grid_dim=ceildiv(H, 256), block_dim=256)
+            if skel and phase == 0:
+                gs.record_event(ev_pref[LAYERS - 1])
+            ks.record_event(ev_ph)
         if fast:
             ks.enqueue_function(k_normf, x, fnorm, hbf, grid_dim=1, block_dim=256)
         else:

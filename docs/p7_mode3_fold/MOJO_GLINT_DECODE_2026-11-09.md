@@ -251,3 +251,22 @@ M6 is still not met on Mojo.
 | 1200 MB (74%) | 82.9% | 78.0% | 76.2% |
 
 **Result.** At 30% and 50% selection, the arms that track, the hit rate is only a few points above the fraction of the plug that is cached (400 MB caches 25% of the plug and serves 28-30%; 800 MB caches 50% and serves 50-52%). There is no small hot set to keep resident. Bringing the 50% arm (807 MB) under 350 MB per token would need about 850 MB of cache, half the plug, which is no longer streaming. The cache does not rescue M6. Only the 10% selection, which does not track, shows a skew (400 MB serves 39.5%).
+
+### Skeleton pass ("stutter"): the model's own fold-only pass chooses the prefetch, 2026-11-14
+
+**Design (operator direction, 2026-11-14).** Per token, run the fold-only model first (phase 0, resident weights only, no correction). At each linear it picks the top channels of its own activation with the same select kernel and, as soon as a layer's picks exist, starts gathering those plug rows on a second stream. Then restart from the embedding (phase 1) and run the real pass: it waits per layer for the rows already in flight and corrects with the skeleton's channels, multiplied by the real activations. `skel` mode (needs `dsel+kmaj`); `ksplit` applies to the phase-1 correction. The skeleton's KV writes at the position are overwritten by phase 1.
+
+**Bug found and fixed while building it.** The first version produced garbage even at 0% selection (top-1 0/128, against 102/128 for plain fold-only) because phase 1's embedding ran on the default stream while phase 0's kernels were still on the compute stream. A cross-stream wait fixed it; at 0% the skeleton arm now matches fold-only bit for bit in PPL (87.0932, 102/128).
+
+**Teacher-forced sanity, 128 positions.** Skeleton-chosen selection holds the quality of true same-token selection: 10%: PPL 71.80, top-1 115/128 (true selection: 71.66, 112/128); 30%: 73.19, 120/128 (true: 73.91, 120/128).
+
+**Free-running rollout (Amendment 3 protocol, against the full-plug arm), with `ksplit`:**
+
+| selection | skeleton: prefix | agreement | tok/s | MB/token | true same-token selection: prefix | agreement | tok/s |
+|---|---|---|---|---|---|---|---|
+| 10% | 13.58 | 56.8% | 11.2 | 163 | 13.08 | 54.2% | 12.4 |
+| 20% | 14.42 | 54.2% | 8.7 | 324 | n/a | n/a | n/a |
+| 30% | 26.25 | 82.0% | 7.2 | 485 | 19.17 | 74.0% | 5.9 |
+| 50% | 22.50 | 70.3% | 5.2 | 807 | 27.92 | 92.7% | 4.7 |
+
+**Reading.** The skeleton's channels track about as well as true selection at 10-30% (30%: prefix 26.25 passes the 20.0 bar, agreement 82.0% misses 82.5% by 0.5 points) and worse at 50%. The results are not monotone in the fraction, which shows how noisy 12 prompts of 32 greedy tokens are, so the 30% advantage over true selection is not a finding. It is faster at 30% (7.2 against 5.9 tok/s) because the gather hides behind the skeleton and the real pass. M6 is still unmet: the nearest arm is 30% at 7.2 tok/s and 0.5 points under the agreement bar. The skeleton runs on the same GPU here and costs about 30 ms per token (fold-only alone is 33 tok/s); moving it to a second GPU removes that from the critical path, which for the 30% arm is an estimate of about 108 ms per token (9.3 tok/s), not a measurement.
