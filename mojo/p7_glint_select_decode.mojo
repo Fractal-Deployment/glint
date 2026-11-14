@@ -220,6 +220,11 @@ def main() raises:
     var vgat = False
     var roll = False
     var stale = False
+    var tier = False
+    var pct2 = 0
+    if len(args) > 10:
+        for b in String(args[10]).as_bytes():
+            pct2 = pct2 * 10 + Int(b) - 48
     var ksplit = False
     var abl = 0
     if len(args) > 7:
@@ -231,6 +236,7 @@ def main() raises:
         vgat = "vgat" in mode
         roll = "roll" in mode
         stale = "stale" in mode
+        tier = "tier" in mode
         ksplit = "ksplit" in mode
         # timing-only ablations of the device-selection path (results are NOT valid): abl1 = select only, abl2 = select + gather, abl3 = select + correction on stale staging
         if "abl1" in mode:
@@ -535,6 +541,36 @@ def main() raises:
     var k_mk = ctx.compile_function[make_tables[ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin, MutUntrackedOrigin]]()
     ctx.enqueue_function(k_mk, table, parent_b, t0b, dltb, grid_dim=1, block_dim=256)
     ctx.synchronize()
+    # Tiered plug (emulation of reconstruction only; bytes are analytic): channels in the top `pct` percent keep the full 4-bit plug,
+    # the next `pct2` percent get a 3-bit code in which adjacent child cells (p = 2m, 2m+1) share their mean. With T3 the merged table,
+    # delta3 = T3 - parent is applied to every selected channel and (delta4 - delta3) is added on the top slice only, so the top slice
+    # ends up with the exact 4-bit delta and the second slice with the merged one.
+    var dltD = ctx.enqueue_create_buffer[DType.float32](256)
+    if tier:
+        var cells_h = ctx.enqueue_create_host_buffer[DType.float32](256)
+        var d3_h = ctx.enqueue_create_host_buffer[DType.float32](256)
+        var dD_h = ctx.enqueue_create_host_buffer[DType.float32](256)
+        var d4_h = ctx.enqueue_create_host_buffer[DType.float32](256)
+        ctx.enqueue_copy(dst_buf=cells_h, src_buf=table)
+        ctx.enqueue_copy(dst_buf=d4_h, src_buf=dltb)
+        ctx.synchronize()
+        for h in range(16):
+            for m in range(8):
+                var avg = (cells_h[h * 16 + 2 * m] + cells_h[h * 16 + 2 * m + 1]) * Float32(0.5)
+                var par = cells_h[h * 16 + 2 * m] - d4_h[h * 16 + 2 * m]
+                for u in range(2):
+                    var pi = 2 * m + u
+                    d3_h[h * 16 + pi] = avg - par
+                    dD_h[h * 16 + pi] = d4_h[h * 16 + pi] - (avg - par)
+        ctx.enqueue_copy(dst_buf=dltb, src_buf=d3_h)
+        ctx.enqueue_copy(dst_buf=dltD, src_buf=dD_h)
+        ctx.synchronize()
+    var idx_b = ctx.enqueue_create_buffer[DType.int32](8192)
+    var cnt_b = ctx.enqueue_create_buffer[DType.int32](1)
+    var dummy_log = ctx.enqueue_create_buffer[DType.int32](4)
+    var stage_b8 = ctx.enqueue_create_buffer[DType.uint8](stage_bytes)
+    var stage_b32 = DeviceBuffer[DType.uint32](ctx, stage_b8.unsafe_ptr().unsafe_bitcast[UInt32](), stage_bytes // 4, owning=False)
+    var ev_gat2 = ctx.create_event()
     # Optional K-major copies of the hole nibbles and block scales (extra VRAM ~ the size of the resident hole + scales) so the
     # selected-channel correction reads are coalesced across rows.
     var hk_u8 = List[type_of(ctx.enqueue_create_buffer[DType.uint8](1))]()
@@ -621,15 +657,19 @@ def main() raises:
         nsel_i = fixed_n
     var nh = List[Int]()
     var ni = List[Int]()
+    var nh1 = List[Int]()
+    var ni1 = List[Int]()
     for l in range(LAYERS):
         var pl = pct
         if ends > 0 and (l < ends or l >= LAYERS - ends):
             pl = endpct
-        nh.append((pl * H + 99) // 100)
-        ni.append((pl * INTER + 99) // 100)
+        nh.append(((pl + pct2) * H + 99) // 100)
+        ni.append(((pl + pct2) * INTER + 99) // 100)
+        nh1.append((pl * H + 99) // 100)
+        ni1.append((pl * INTER + 99) // 100)
     var bytes_total = 0
     var frac_sum = Float64(0)
-    print("MOJO_GLINT_SELECT_CONFIG fast", fast, "attn_split", attn_split, "dsel", dsel, "kmaj", kmaj, "vgat", vgat, "roll", roll, "stale", stale, "ksplit", ksplit, "abl", abl, "ends", ends, "endpct", endpct, "percent", pct, "fixed_n", fixed_n, "nsel_hidden", nsel_h, "nsel_inter", nsel_i)
+    print("MOJO_GLINT_SELECT_CONFIG fast", fast, "attn_split", attn_split, "dsel", dsel, "kmaj", kmaj, "vgat", vgat, "roll", roll, "stale", stale, "tier", tier, "pct2", pct2, "ksplit", ksplit, "abl", abl, "ends", ends, "endpct", endpct, "percent", pct, "fixed_n", fixed_n, "nsel_hidden", nsel_h, "nsel_inter", nsel_i)
     print("MOJO_GLINT_SELECT_DECODE_BEGIN", steps)
     var t0 = perf_counter_ns()
     var gen = List[Int]()
@@ -706,6 +746,12 @@ def main() raises:
                             ks.enqueue_function(k_corrk, hk_v[l * 4 + 0], sk_v[l * 4 + 0], dltb, hbf, idx_dev, stage_u8, cnt_dev, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 128), block_dim=128)
                     else:
                         ks.enqueue_function(k_corrd, wq_v[l * 4 + 0], sw_v[l * 4 + 0], dltb, hbf, idx_dev, stage_u8, cnt_dev, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 128), block_dim=128)
+                if tier and nh1[l] > 0:
+                    ctx.enqueue_function(k_sel, hbf16, idx_b, cnt_b, dummy_log, Int32(0), Int32(H), Int32(nh1[l]), grid_dim=1, block_dim=1024)
+                    ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 0], idx_b, cnt_b, stage_b32, Int32(QKV // 8), grid_dim=H, block_dim=128)
+                    ctx.stream().record_event(ev_gat2)
+                    ks.enqueue_wait_for(ev_gat2)
+                    ks.enqueue_function(k_corrk, hk_v[l * 4 + 0], sk_v[l * 4 + 0], dltD, hbf, idx_b, stage_b8, cnt_b, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 128), block_dim=128)
             elif nsel_h > 0:
                 ctx.stream().enqueue_wait_for(ev_in)
                 ctx.enqueue_copy(dst_buf=xh_h, src_buf=hbf16)
@@ -775,6 +821,12 @@ def main() raises:
                             ks.enqueue_function(k_corrk, hk_v[l * 4 + 1], sk_v[l * 4 + 1], dltb, attnb, idx_dev, stage_u8, cnt_dev, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
                     else:
                         ks.enqueue_function(k_corrd, wq_v[l * 4 + 1], sw_v[l * 4 + 1], dltb, attnb, idx_dev, stage_u8, cnt_dev, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
+                if tier and nh1[l] > 0:
+                    ctx.enqueue_function(k_sel, attnb16, idx_b, cnt_b, dummy_log, Int32(0), Int32(H), Int32(nh1[l]), grid_dim=1, block_dim=1024)
+                    ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 1], idx_b, cnt_b, stage_b32, Int32(H // 8), grid_dim=H, block_dim=128)
+                    ctx.stream().record_event(ev_gat2)
+                    ks.enqueue_wait_for(ev_gat2)
+                    ks.enqueue_function(k_corrk, hk_v[l * 4 + 1], sk_v[l * 4 + 1], dltD, attnb, idx_b, stage_b8, cnt_b, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 128), block_dim=128)
             elif nsel_h > 0:
                 ctx.stream().enqueue_wait_for(ev_in)
                 ctx.enqueue_copy(dst_buf=xh_h, src_buf=attnb16)
@@ -842,6 +894,12 @@ def main() raises:
                             ks.enqueue_function(k_corrk, hk_v[l * 4 + 2], sk_v[l * 4 + 2], dltb, hbf, idx_dev, stage_u8, cnt_dev, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
                     else:
                         ks.enqueue_function(k_corrd, wq_v[l * 4 + 2], sw_v[l * 4 + 2], dltb, hbf, idx_dev, stage_u8, cnt_dev, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
+                if tier and nh1[l] > 0:
+                    ctx.enqueue_function(k_sel, hbf16, idx_b, cnt_b, dummy_log, Int32(0), Int32(H), Int32(nh1[l]), grid_dim=1, block_dim=1024)
+                    ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 2], idx_b, cnt_b, stage_b32, Int32(2 * INTER // 8), grid_dim=H, block_dim=128)
+                    ctx.stream().record_event(ev_gat2)
+                    ks.enqueue_wait_for(ev_gat2)
+                    ks.enqueue_function(k_corrk, hk_v[l * 4 + 2], sk_v[l * 4 + 2], dltD, hbf, idx_b, stage_b8, cnt_b, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 128), block_dim=128)
             elif nsel_h > 0:
                 ctx.stream().enqueue_wait_for(ev_in)
                 ctx.enqueue_copy(dst_buf=xh_h, src_buf=hbf16)
@@ -905,6 +963,12 @@ def main() raises:
                             ks.enqueue_function(k_corrk, hk_v[l * 4 + 3], sk_v[l * 4 + 3], dltb, actb, idx_dev, stage_u8, cnt_dev, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 128), block_dim=128)
                     else:
                         ks.enqueue_function(k_corrd, wq_v[l * 4 + 3], sw_v[l * 4 + 3], dltb, actb, idx_dev, stage_u8, cnt_dev, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 128), block_dim=128)
+                if tier and ni1[l] > 0:
+                    ctx.enqueue_function(k_sel, actb16, idx_b, cnt_b, dummy_log, Int32(0), Int32(INTER), Int32(ni1[l]), grid_dim=1, block_dim=1024)
+                    ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 3], idx_b, cnt_b, stage_b32, Int32(H // 8), grid_dim=INTER, block_dim=128)
+                    ctx.stream().record_event(ev_gat2)
+                    ks.enqueue_wait_for(ev_gat2)
+                    ks.enqueue_function(k_corrk, hk_v[l * 4 + 3], sk_v[l * 4 + 3], dltD, actb, idx_b, stage_b8, cnt_b, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 128), block_dim=128)
             elif nsel_i > 0:
                 ctx.stream().enqueue_wait_for(ev_in)
                 ctx.enqueue_copy(dst_buf=xh_i, src_buf=actb16)

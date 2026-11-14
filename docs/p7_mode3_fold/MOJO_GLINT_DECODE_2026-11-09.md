@@ -212,3 +212,27 @@ Previous-token selection does not track at any fraction (the same direction as t
 **Split correction.** The selected-channel correction ran one thread per output row, each walking every selected channel serially (40-128 blocks). `ksplit` divides the selected channels into 8 chunks, one grid row each (more blocks), sums each chunk in ascending channel order and adds the 8 partials in a fixed order. Deterministic, different summation order. 2047-position gate, act 10%: 95.55% (1956/2047), PPL 5.4982, **14.14 tok/s** (70.7 ms/token) versus 12.1 tok/s without it; per-position agreement with the non-split arm 98.53% (noise floor 98.4-98.6%). At 50% (128 steps, timing only) 252.7 -> 198.9 ms/token (3.96 -> 5.03 tok/s). The correction was not the only cost: fold 33, select 6 and the gather remain, and at 50% the 807 MB gather alone is at least 72 ms at the measured link rate.
 
 M6 is still not met on Mojo: the arms that track (50%) run at about 5 tok/s and the arms above 10 tok/s do not track.
+
+### Tiered plug precision (`tier`, emulated), free-running rollout, 2026-11-14
+
+**Question (#117 transfer granularity).** Does the Amendment-3 tracking survive if the selected channels are not all fetched at the full 4-bit plug? `tier` splits the selection into a top tier (the highest `pct`% of channels by activation magnitude, corrected with the full 4-bit plug, as before) and a second tier (the next `pct2`%, corrected with a 3-bit plug: the mean of each pair of adjacent plug cells, `d3 = (cells[h][2m] + cells[h][2m+1]) / 2 - parent`). The second pass adds `d4 - d3` for the top tier, so the top tier ends at exactly the 4-bit result.
+
+**Emulation, not a packed store.** The kernel gathers every selected channel as a 4-bit row and applies the coarser table on the host-visible values, so the measured tok/s below is the emulation's own speed and says nothing about a real 3-bit store. The analytic traffic assumes 3-bit rows cost 0.75 of a 4-bit row: `(pct + 0.75 * pct2) / 100 * 1.61 GB` per token. Sanity at 128 teacher-forced steps (no `roll`): tier with `pct2 = 0` gives PPL 72.28 and top-1 113/128 against 71.66 and 112/128 without `tier`, so the second pass changes nothing when it has nothing to add.
+
+**Pre-registered rule (written before the run).** Score each arm by matched prefix >= 20.0 and agreement >= 82.5% against the full-plug arm of the same protocol. If any tracking arm needs about 350 MB per token or less, build a real packed 3-bit store and measure its speed. If none does, tiering cannot reach M6 on this link and that is the result.
+
+| top pct | second pct2 | prefix | agreement | analytic MB/token | emulation tok/s | tracks |
+|---|---|---|---|---|---|---|
+| 5 | 10 | 15.50 | 57.8% | 201 | 8.5 | no |
+| 10 | 10 | 18.67 | 67.4% | 282 | 6.2 | no |
+| 5 | 20 | 18.33 | 66.4% | 322 | 6.3 | no |
+| 10 | 15 | 16.33 | 62.0% | 342 | 5.4 | no |
+| 10 | 20 | 22.25 | 70.6% | 403 | 5.1 | no (agreement 11.9 points short) |
+| 10 | 30 | 25.50 | 83.3% | 523 | 3.6 | yes, by 0.8 points of agreement |
+| reference: uniform 50 | none | 27.92 | 92.7% | 807 | 4.7 | yes |
+
+**Result.** The only tracking tier arm needs 523 MB per token, above the 350 MB threshold, and it clears the agreement bar by 0.8 points on 12 prompts, so it is marginal. Nothing at or below 350 MB tracks. By the rule the packed 3-bit store was not built. For scale: at the measured 11.2 GB/s the 523 MB alone is 47 ms per token, against 70-85 ms for the whole token on the fast arms, so this arm would need near-perfect overlap to reach 10 tok/s, which the `stale` and `ksplit` work did not achieve.
+
+The `PPL` and `oracle_top1` lines in the rollout logs (millions, about 65/1140) are not a quality signal: they appear identically in the full-plug reference arm, because in rollout mode they score free-running tokens against a teacher oracle. Tracking is read only from the matched prefix and agreement, computed by `scripts/p7_roll_score.py`, which reproduces the earlier recorded values (50%: 92.7%, 10%: 54.2%).
+
+M6 is still not met on Mojo.

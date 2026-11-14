@@ -29,9 +29,9 @@ fi
 { echo "# retest $(date -Is) host $(hostname) driver $(nvidia-smi --query-gpu=driver_version --format=csv,noheader)"; echo "# idle guard passed: compute_processes=$apps qemu_vms=$vms mean_util_10s=${mean}% (ambient desktop graphics included)"; } >> "$OUT/summary.txt"
 lxc exec 40-Runtime-Deps -- bash -c "export MODULAR_HOME=/root/.pixi/envs/modular/share/max; export PATH=/root/.pixi/envs/modular/bin:\$PATH; cd $R && mojo build -I mojo -o /tmp/p7_select_retest mojo/p7_glint_select_decode.mojo" > "$OUT/build.log" 2>&1 || { echo "build failed" | tee -a "$OUT/summary.txt"; exit 3; }
 for c in $CFGS; do
-  IFS=: read -r pct fx mode ends endpct <<< "$c"; fx="${fx:-0}"; mode="${mode:-ref}"; ends="${ends:-0}"; endpct="${endpct:-0}"
-  tag="p${pct}_n${fx}_${mode}_e${ends}x${endpct}_s${STEPS}"
-  bash "$FL" -- lxc exec 40-Runtime-Deps -- env MODULAR_HOME=/root/.pixi/envs/modular/share/max /tmp/p7_select_retest "$PIN" "$M" "$A" "$STEPS" "$pct" "$fx" "$mode" "$ends" "$endpct" > "$OUT/$tag.log" 2>&1
+  IFS=: read -r pct fx mode ends endpct pct2 <<< "$c"; fx="${fx:-0}"; mode="${mode:-ref}"; ends="${ends:-0}"; endpct="${endpct:-0}"; pct2="${pct2:-0}"
+  tag="p${pct}_n${fx}_${mode}_e${ends}x${endpct}_t${pct2}_s${STEPS}"
+  bash "$FL" -- lxc exec 40-Runtime-Deps -- env MODULAR_HOME=/root/.pixi/envs/modular/share/max /tmp/p7_select_retest "$PIN" "$M" "$A" "$STEPS" "$pct" "$fx" "$mode" "$ends" "$endpct" "$pct2" > "$OUT/$tag.log" 2>&1
   echo "== $tag exit $?" >> "$OUT/summary.txt"
   grep -E "^MOJO_GLINT_SELECT_(CONFIG|DECODE steps|DECODE ppl|STATS)" "$OUT/$tag.log" | cut -c1-230 >> "$OUT/summary.txt"
 done
