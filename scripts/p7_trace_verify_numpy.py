@@ -3,12 +3,12 @@
 
 Decodes the SAME glint_pin_v1 pin with numpy, runs an f32 SmolLM2 forward for the same token ids, and compares the traced
 tensors against it. Also runs a forward on the ORIGINAL BF16 weights, to separate GLINT quantisation error from tracer error.
-Usage (container python with numpy): p7_trace_verify_numpy.py PIN_DIR BF16_SAFETENSORS TRACE.json
+Usage (container python with numpy): p7_trace_verify_numpy.py PIN_DIR BF16_SAFETENSORS TRACE_DIR   (a glint_trace_v2 directory)
 """
 import json, struct, sys
 import numpy as np
 
-pin_dir, bf16_path, trace_path = sys.argv[1], sys.argv[2], sys.argv[3]
+pin_dir, bf16_path, trace_dir = sys.argv[1], sys.argv[2], sys.argv[3]
 H, NH, NKV, HD, INTER, NL, V = 576, 9, 3, 64, 1536, 30, 49152
 THETA, EPS = 100000.0, 1e-5
 
@@ -106,15 +106,9 @@ def forward(get_w, get_norm, emb, ids):
     return last
 
 
-tr = json.load(open(trace_path))
-
-
-def bits(a):
-    return np.array(a, dtype=np.uint32).view(np.float32)
-
-
-tr["cells"] = bits(tr["cells"])
-tr["tensors"] = {k: bits(v) for k, v in tr["tensors"].items()}
+man = json.load(open(trace_dir + "/manifest.json"))
+blob = np.fromfile(trace_dir + "/tensors.bin", dtype=np.float32)
+tr = {"tokens": man["tokens"], "trace_pos": man["trace_pos"], "tensors": {k: blob[o:o + n] for k, (o, n) in man["tensors"].items()}}
 ids = tr["tokens"]
 print("tokens", ids, "traced position", tr["trace_pos"])
 
