@@ -236,3 +236,18 @@ M6 is still not met on Mojo: the arms that track (50%) run at about 5 tok/s and 
 The `PPL` and `oracle_top1` lines in the rollout logs (millions, about 65/1140) are not a quality signal: they appear identically in the full-plug reference arm, because in rollout mode they score free-running tokens against a teacher oracle. Tracking is read only from the matched prefix and agreement, computed by `scripts/p7_roll_score.py`, which reproduces the earlier recorded values (50%: 92.7%, 10%: 54.2%).
 
 M6 is still not met on Mojo.
+
+### Hot-channel VRAM cache: selection-frequency profile, 2026-11-14
+
+**Question.** Could a bounded VRAM cache of the most-selected plug rows cut PCIe traffic enough for a tracking arm to reach 10 tok/s? A cache leaves what is corrected unchanged, so tracking would not move; only the bytes streamed would.
+
+**Method.** `prof` mode counts, per (layer, linear), how often each input channel is selected over the 12-prompt rollout (1140 tokens). Cache entries are chosen greedily by frequency per byte on prompts 0-5 and scored on prompts 6-11, so the hit rate is held out. Analysis: `scripts/p7_prof_cache.py`. The profile runs gather the same bytes per token as the unprofiled arms (163, 485 and 807 MB).
+
+| cache budget | 10% selection | 30% selection | 50% selection |
+|---|---|---|---|
+| 200 MB (12% of the plug) | 26.8% hit | 18.7% | 16.0% |
+| 400 MB (25%) | 39.5% | 30.5% | 28.0% |
+| 800 MB (50%) | 60.1% | 52.5% | 50.4% |
+| 1200 MB (74%) | 82.9% | 78.0% | 76.2% |
+
+**Result.** At 30% and 50% selection, the arms that track, the hit rate is only a few points above the fraction of the plug that is cached (400 MB caches 25% of the plug and serves 28-30%; 800 MB caches 50% and serves 50-52%). There is no small hot set to keep resident. Bringing the 50% arm (807 MB) under 350 MB per token would need about 850 MB of cache, half the plug, which is no longer streaming. The cache does not rescue M6. Only the 10% selection, which does not track, shows a skew (400 MB serves 39.5%).

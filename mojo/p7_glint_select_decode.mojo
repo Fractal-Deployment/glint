@@ -24,7 +24,7 @@ from p7_glint_linear import glint_gemv_warp
 from p7_glint_gemv_fast import glint_gemv_fast
 from p7_decode_fast_kernels import rms_norm_block, logits_warp, ce_argmax_block
 from p7_attention_split import attention_split_partial, attention_split_combine, NCH
-from p7_select_device import select_topk, gather_rows_d, apply_corr_d, apply_corr_k, transpose_scales, gather_rows_d4, apply_corr_ks, combine_corr, KS
+from p7_select_device import select_topk, gather_rows_d, apply_corr_d, apply_corr_k, transpose_scales, gather_rows_d4, apply_corr_ks, combine_corr, KS, accum_hist
 
 comptime CTX = 2048
 comptime NT = CTX - 1
@@ -226,6 +226,7 @@ def main() raises:
         for b in String(args[10]).as_bytes():
             pct2 = pct2 * 10 + Int(b) - 48
     var ksplit = False
+    var prof = False
     var abl = 0
     if len(args) > 7:
         var mode = String(args[7])
@@ -238,6 +239,7 @@ def main() raises:
         stale = "stale" in mode
         tier = "tier" in mode
         ksplit = "ksplit" in mode
+        prof = "prof" in mode
         # timing-only ablations of the device-selection path (results are NOT valid): abl1 = select only, abl2 = select + gather, abl3 = select + correction on stale staging
         if "abl1" in mode:
             abl = 1
@@ -603,6 +605,12 @@ def main() raises:
     var k_gatd = ctx.compile_function[gather_rows_d[ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
     var k_corrd = ctx.compile_function[apply_corr_d[ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
     var cnt_dev = ctx.enqueue_create_buffer[DType.int32](1)
+    var k_acc = ctx.compile_function[accum_hist[ImmUntrackedOrigin, ImmUntrackedOrigin, MutUntrackedOrigin]]()
+    var hist_d = ctx.enqueue_create_buffer[DType.int32](2 * LAYERS * 4 * INTER)
+    var hist_z = ctx.enqueue_create_host_buffer[DType.int32](2 * LAYERS * 4 * INTER)
+    for i in range(2 * LAYERS * 4 * INTER):
+        hist_z[i] = 0
+    ctx.enqueue_copy(dst_buf=hist_d, src_buf=hist_z)
     var cnt_log = ctx.enqueue_create_buffer[DType.int32](steps * LAYERS * 4)
     # Prefetch-timing control "stale": the channels fetched for token t are the ones selected on token t-1 (kept per linear, double
     # buffered), so the plug rows for a whole token can be gathered on a second stream while the compute stream runs. The values
@@ -730,6 +738,8 @@ def main() raises:
             elif dsel and nh[l] > 0:
                 ctx.stream().enqueue_wait_for(ev_in)
                 ctx.enqueue_function(k_sel, hbf16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 0), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
+                if prof:
+                    ctx.enqueue_function(k_acc, idx_dev, cnt_dev, hist_d, Int32((((1 if pi >= 6 else 0) * LAYERS + l) * 4 + 0) * INTER), grid_dim=1, block_dim=128)
                 if abl == 0 or abl == 2:
                     if vgat:
                         ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 0], idx_dev, cnt_dev, stage_w, Int32(QKV // 8), grid_dim=H, block_dim=128)
@@ -805,6 +815,8 @@ def main() raises:
             elif dsel and nh[l] > 0:
                 ctx.stream().enqueue_wait_for(ev_in)
                 ctx.enqueue_function(k_sel, attnb16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 1), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
+                if prof:
+                    ctx.enqueue_function(k_acc, idx_dev, cnt_dev, hist_d, Int32((((1 if pi >= 6 else 0) * LAYERS + l) * 4 + 1) * INTER), grid_dim=1, block_dim=128)
                 if abl == 0 or abl == 2:
                     if vgat:
                         ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 1], idx_dev, cnt_dev, stage_w, Int32(H // 8), grid_dim=H, block_dim=128)
@@ -878,6 +890,8 @@ def main() raises:
             elif dsel and nh[l] > 0:
                 ctx.stream().enqueue_wait_for(ev_in)
                 ctx.enqueue_function(k_sel, hbf16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 2), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
+                if prof:
+                    ctx.enqueue_function(k_acc, idx_dev, cnt_dev, hist_d, Int32((((1 if pi >= 6 else 0) * LAYERS + l) * 4 + 2) * INTER), grid_dim=1, block_dim=128)
                 if abl == 0 or abl == 2:
                     if vgat:
                         ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 2], idx_dev, cnt_dev, stage_w, Int32(2 * INTER // 8), grid_dim=H, block_dim=128)
@@ -947,6 +961,8 @@ def main() raises:
             elif dsel and ni[l] > 0:
                 ctx.stream().enqueue_wait_for(ev_in)
                 ctx.enqueue_function(k_sel, actb16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 3), Int32(INTER), Int32(ni[l]), grid_dim=1, block_dim=1024)
+                if prof:
+                    ctx.enqueue_function(k_acc, idx_dev, cnt_dev, hist_d, Int32((((1 if pi >= 6 else 0) * LAYERS + l) * 4 + 3) * INTER), grid_dim=1, block_dim=128)
                 if abl == 0 or abl == 2:
                     if vgat:
                         ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 3], idx_dev, cnt_dev, stage_w, Int32(H // 8), grid_dim=INTER, block_dim=128)
@@ -1048,6 +1064,15 @@ def main() raises:
             else:
                 bytes_total += cn * (H // 2)
                 frac_sum += Float64(cn) / Float64(INTER)
+    if prof:
+        var hh = ctx.enqueue_create_host_buffer[DType.int32](2 * LAYERS * 4 * INTER)
+        ctx.enqueue_copy(dst_buf=hh, src_buf=hist_d)
+        ctx.synchronize()
+        for g in range(2 * LAYERS * 4):
+            var line = String("MOJO_PROF ") + String(g)
+            for c in range(INTER):
+                line += String(" ") + String(Int(hh[g * INTER + c]))
+            print(line)
     var total_ce = Float64(0)
     var matches = 0
     for pos in range(steps):

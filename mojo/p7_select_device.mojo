@@ -221,3 +221,12 @@ def combine_corr[
     for s in range(1, KS):
         acc = acc + part[unsafe_offset=s * Int(n) + r]
     y[unsafe_offset=r] = y[unsafe_offset=r] + acc
+
+# Selection-frequency profile (read-only diagnostic, "prof" mode): hist[off + channel] += 1 for every channel selected by the current linear.
+def accum_hist[
+    io: ImmOrigin, co: ImmOrigin, ho: MutOrigin
+](idx: ImmPointer[Int32, io], cnt: ImmPointer[Int32, co], hist: MutPointer[Int32, ho], off: Int32):
+    var n = Int(cnt[unsafe_offset=0])
+    for i in range(Int(thread_idx.x), n, 128):
+        var c = Int(off) + Int(idx[unsafe_offset=i])
+        hist[unsafe_offset=c] = hist[unsafe_offset=c] + 1
