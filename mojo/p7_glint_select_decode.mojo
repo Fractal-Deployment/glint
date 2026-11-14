@@ -237,6 +237,14 @@ def main() raises:
             abl = 3
     if roll:
         steps = 12 * 95
+    # Optional 9th/10th args (selection control): layers [0, ends) and [LAYERS - ends, LAYERS) select endpct percent instead of percent.
+    var ends = 0
+    var endpct = 0
+    if len(args) > 9:
+        for b in String(args[8]).as_bytes():
+            ends = ends * 10 + Int(b) - 48
+        for b in String(args[9]).as_bytes():
+            endpct = endpct * 10 + Int(b) - 48
     var fixed_n = 0
     if len(args) > 6:
         for b in String(args[6]).as_bytes():
@@ -568,9 +576,17 @@ def main() raises:
     if fixed_n > 0:
         nsel_h = fixed_n
         nsel_i = fixed_n
+    var nh = List[Int]()
+    var ni = List[Int]()
+    for l in range(LAYERS):
+        var pl = pct
+        if ends > 0 and (l < ends or l >= LAYERS - ends):
+            pl = endpct
+        nh.append((pl * H + 99) // 100)
+        ni.append((pl * INTER + 99) // 100)
     var bytes_total = 0
     var frac_sum = Float64(0)
-    print("MOJO_GLINT_SELECT_CONFIG fast", fast, "attn_split", attn_split, "dsel", dsel, "kmaj", kmaj, "vgat", vgat, "roll", roll, "abl", abl, "percent", pct, "fixed_n", fixed_n, "nsel_hidden", nsel_h, "nsel_inter", nsel_i)
+    print("MOJO_GLINT_SELECT_CONFIG fast", fast, "attn_split", attn_split, "dsel", dsel, "kmaj", kmaj, "vgat", vgat, "roll", roll, "abl", abl, "ends", ends, "endpct", endpct, "percent", pct, "fixed_n", fixed_n, "nsel_hidden", nsel_h, "nsel_inter", nsel_i)
     print("MOJO_GLINT_SELECT_DECODE_BEGIN", steps)
     var t0 = perf_counter_ns()
     var gen = List[Int]()
@@ -608,9 +624,9 @@ def main() raises:
                 ks.enqueue_function(k_gemvf, wq32[l * 4 + 0], wq32[l * 4 + 0], sw_v[l * 4 + 0], t0b, hbf, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 4), block_dim=128)
             else:
                 ks.enqueue_function(k_gemv, wq_v[l * 4 + 0], wq_v[l * 4 + 0], sw_v[l * 4 + 0], t0b, hbf, qkv, Int32(QKV), Int32(H), grid_dim=ceildiv(QKV, 4), block_dim=128)
-            if dsel and nsel_h > 0:
+            if dsel and nh[l] > 0:
                 ctx.stream().enqueue_wait_for(ev_in)
-                ctx.enqueue_function(k_sel, hbf16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 0), Int32(H), Int32(nsel_h), grid_dim=1, block_dim=1024)
+                ctx.enqueue_function(k_sel, hbf16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 0), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
                 if abl == 0 or abl == 2:
                     if vgat:
                         ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 0], idx_dev, cnt_dev, stage_w, Int32(QKV // 8), grid_dim=H, block_dim=128)
@@ -666,9 +682,9 @@ def main() raises:
                 ks.enqueue_function(k_gemvf, wq32[l * 4 + 1], wq32[l * 4 + 1], sw_v[l * 4 + 1], t0b, attnb, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 4), block_dim=128)
             else:
                 ks.enqueue_function(k_gemv, wq_v[l * 4 + 1], wq_v[l * 4 + 1], sw_v[l * 4 + 1], t0b, attnb, proj, Int32(H), Int32(H), grid_dim=ceildiv(H, 4), block_dim=128)
-            if dsel and nsel_h > 0:
+            if dsel and nh[l] > 0:
                 ctx.stream().enqueue_wait_for(ev_in)
-                ctx.enqueue_function(k_sel, attnb16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 1), Int32(H), Int32(nsel_h), grid_dim=1, block_dim=1024)
+                ctx.enqueue_function(k_sel, attnb16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 1), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
                 if abl == 0 or abl == 2:
                     if vgat:
                         ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 1], idx_dev, cnt_dev, stage_w, Int32(H // 8), grid_dim=H, block_dim=128)
@@ -722,9 +738,9 @@ def main() raises:
                 ks.enqueue_function(k_gemvf, wq32[l * 4 + 2], wq32[l * 4 + 2], sw_v[l * 4 + 2], t0b, hbf, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 4), block_dim=128)
             else:
                 ks.enqueue_function(k_gemv, wq_v[l * 4 + 2], wq_v[l * 4 + 2], sw_v[l * 4 + 2], t0b, hbf, gu, Int32(2 * INTER), Int32(H), grid_dim=ceildiv(2 * INTER, 4), block_dim=128)
-            if dsel and nsel_h > 0:
+            if dsel and nh[l] > 0:
                 ctx.stream().enqueue_wait_for(ev_in)
-                ctx.enqueue_function(k_sel, hbf16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 2), Int32(H), Int32(nsel_h), grid_dim=1, block_dim=1024)
+                ctx.enqueue_function(k_sel, hbf16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 2), Int32(H), Int32(nh[l]), grid_dim=1, block_dim=1024)
                 if abl == 0 or abl == 2:
                     if vgat:
                         ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 2], idx_dev, cnt_dev, stage_w, Int32(2 * INTER // 8), grid_dim=H, block_dim=128)
@@ -774,9 +790,9 @@ def main() raises:
                 ks.enqueue_function(k_gemvf, wq32[l * 4 + 3], wq32[l * 4 + 3], sw_v[l * 4 + 3], t0b, actb, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 4), block_dim=128)
             else:
                 ks.enqueue_function(k_gemv, wq_v[l * 4 + 3], wq_v[l * 4 + 3], sw_v[l * 4 + 3], t0b, actb, down, Int32(H), Int32(INTER), grid_dim=ceildiv(H, 4), block_dim=128)
-            if dsel and nsel_i > 0:
+            if dsel and ni[l] > 0:
                 ctx.stream().enqueue_wait_for(ev_in)
-                ctx.enqueue_function(k_sel, actb16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 3), Int32(INTER), Int32(nsel_i), grid_dim=1, block_dim=1024)
+                ctx.enqueue_function(k_sel, actb16, idx_dev, cnt_dev, cnt_log, Int32((pos * LAYERS + l) * 4 + 3), Int32(INTER), Int32(ni[l]), grid_dim=1, block_dim=1024)
                 if abl == 0 or abl == 2:
                     if vgat:
                         ctx.enqueue_function(k_gatv, plugk_w[l * 4 + 3], idx_dev, cnt_dev, stage_w, Int32(H // 8), grid_dim=INTER, block_dim=128)

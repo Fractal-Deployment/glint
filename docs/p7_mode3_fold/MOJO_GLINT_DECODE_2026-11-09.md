@@ -175,3 +175,22 @@ Mode `roll` of `p7_glint_select_decode`: 12 prompts (64 evaluation-text tokens a
 (tok/s over 95-position prompts, mean context ~48, so it overstates long-context speed; use the 2047-position table for speed.)
 
 Reading: on Mojo, as in the CUDA amendments, only about half the plug lets activation selection track the full model, and that arm moves roughly 0.8 GB per token, which the ~11 GB/s link cannot deliver at 10 tok/s (>= ~73 ms/token for the transfer alone, measured 4.7 tok/s here). Act 10% passes the recorded teacher-forced gate (95.55%, 12.1 tok/s) but fails tracking (13.08 / 54.2%). **No Mojo arm both tracks and runs at >= 10 tok/s, so M6 (#92) is not met on this backend.** The CUDA act-25% arm scored 72.7% agreement in Amendment 3 versus 54.9% here; the reference arms differ (CUDA full model vs Mojo full plug) and 12 prompts is a small sample, so the gap is not attributed to a cause. Single run per arm; the decoder is deterministic on repeat. Routes the spec already names for closing the byte gap (3-bit tiered plug, Amendments 5-6) need a packed mixed-width store that does not exist in this repository. Logs: lakes/p7_glint/mojo_roll_20261109.
+
+### Per-layer selection policies (independent selection control `ends:endpct`), free-running rollout, 2026-11-13/14
+
+New control: layers [0, ends) and [32 - ends, 32) select `endpct` percent of input channels, all others select the base percent (`scripts/p7_mojo_select_retest.sh ... "pct:0:mode:ends:endpct"`). Protocol and reference as above (Amendment 3: 12 prompts x 32 greedy steps, reference = full-plug arm, tracking = matched prefix >= 20.0 and agreement >= 82.5%). Single runs on a desktop GPU.
+
+| base % | ends @ % | prefix | agreement | identical | tok/s | MB/token | tracks |
+|---|---|---|---|---|---|---|---|
+| 5 | 2 layers each end @ 100 | 15.25 | 58.1% | 4/12 | 10.7 | 273 | no |
+| 10 | 2 @ 100 | 18.50 | 71.9% | 3/12 | 8.4 | 344 | no |
+| 10 | 4 @ 50 | 14.75 | 59.4% | 4/12 | 9.2 | 324 | no |
+| 25 | 2 @ 100 | 19.67 | 68.2% | 4/12 | 5.4 | 555 | no |
+| 3 | 8 @ 50 | 19.00 | 76.6% | 5/12 | 7.9 | 428 | no |
+| 5 | 6 @ 50 | 23.33 | 78.9% | 6/12 | 8.1 | 354 | no (agreement 3.6 points short) |
+| 5 | 6 @ 75 | 21.83 | 75.5% | 7/12 | 7.2 | 504 | no |
+| 5 | 8 @ 50 | 14.58 | 58.6% | 3/12 | 7.5 | 444 | no |
+| 5 | 10 @ 50 | 13.42 | 60.2% | 3/12 | 6.6 | 535 | no |
+| uniform 50 | none | 27.92 | 92.7% | 10/12 | 4.7 | 807 | yes |
+
+No per-layer policy tracks. The only arm at >= 10 tok/s (5% base, 4 end layers at 100%) reaches 58.1%. Agreement is not monotone in the bytes moved (5% base with 6 end layers at 50% scores 78.9%, with 8 layers 58.6% and with 10 layers 60.2%), which is consistent with the roughly 8 points of run-to-run numerical noise the spec records; differences among arms below the tracking bar are not resolved by one run each. M6 is not met on Mojo by any arm measured: tracking arms are below 10 tok/s and the 10 tok/s arms do not track.
